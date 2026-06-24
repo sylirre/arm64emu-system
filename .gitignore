@@ -1,0 +1,4 @@
+# build artifacts
+/arm64emu
+*.o
+*.d
