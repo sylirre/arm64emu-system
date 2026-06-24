@@ -43,6 +43,11 @@ void exception_take(CPU *c, ExcKind kind, u64 esr, u64 far, u64 ret_addr) {
     c->daif |= PS_D | PS_A | PS_I | PS_F;   /* mask on entry */
     c->pc = (c->vbar[tel] & ~0x7ffULL) + off;
     c->halted = false;
+    /* Taking an exception clears the local exclusive monitor. Without this, an
+     * IRQ landing between a kernel LDXR and its STXR would leave the monitor
+     * valid, letting the resumed STXR spuriously succeed and silently drop the
+     * concurrent update -> intermittent lock/memory corruption in userspace. */
+    c->excl_valid = false;
 
     if (g_trace || g_dbg)
         fprintf(stderr, "[exc] kind=%d -> EL%u vec=0x%llx esr=0x%llx far=0x%llx elr=0x%llx\n",
