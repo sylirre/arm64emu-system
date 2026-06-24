@@ -27,6 +27,23 @@ static u64 stub_ones_read(void *o, u64 off, unsigned size) {
 }
 static void stub_write(void *o, u64 off, unsigned size, u64 v) { (void)o; (void)off; (void)size; (void)v; }
 
+/* Empty virtio-mmio transport: QEMU's 'virt' instantiates 32 transport slots
+ * (stride 0x200) even with no backend. An empty slot still answers the probe
+ * registers with magic="virt", version=1 (legacy), DeviceID=0 (no device),
+ * VendorID="QEMU"; the firmware/OS then skips it. Returning 0 here (as the old
+ * stub did) makes firmware believe the transport is absent and take a divergent
+ * path. We model the slots as empty (no device) until virtio-blk lands (M6). */
+static u64 virtio_mmio_read(void *o, u64 off, unsigned size) {
+    (void)o; (void)size;
+    switch (off & 0x1ff) {            /* register within the 0x200-byte slot */
+        case 0x000: return 0x74726976; /* VIRTIO_MMIO_MAGIC_VALUE "virt" */
+        case 0x004: return 0x1;        /* VIRTIO_MMIO_VERSION (legacy)   */
+        case 0x008: return 0x0;        /* VIRTIO_MMIO_DEVICE_ID = none    */
+        case 0x00c: return 0x554d4551; /* VIRTIO_MMIO_VENDOR_ID "QEMU"    */
+        default:    return 0;
+    }
+}
+
 void platform_build(Machine *m) {
     gic_create(m);
     gtimer_create(m);
@@ -34,9 +51,15 @@ void platform_build(Machine *m) {
     pl031_create(m, m->gic);
     fwcfg_create(m);
 
+    /* GICv2m MSI frame: advertised in the device tree but not emulated. Returning
+     * 0 for MSI_TYPER makes Linux's is_msi_spi_valid() fail gracefully, so the
+     * kernel boots without MSI (virtio-mmio uses wired SPIs); an unmapped read
+     * here would instead fault and panic early init. */
+    machine_add_device(m, 0x08020000, 0x1000,       stub_zero_read, stub_write, m, "gicv2m");
+
     /* Absent-device stubs covering the QEMU 'virt' regions we don't model. */
     machine_add_device(m, 0x09030000, 0x1000,       stub_zero_read, stub_write, m, "gpio-stub");
-    machine_add_device(m, 0x0a000000, 0x4000,       stub_zero_read, stub_write, m, "virtio-stub");
+    machine_add_device(m, 0x0a000000, 0x4000,       virtio_mmio_read, stub_write, m, "virtio-mmio");
     machine_add_device(m, 0x3eff0000, 0x10000,      stub_ones_read, stub_write, m, "pcie-pio");
     machine_add_device(m, 0x10000000, 0x2eff0000,   stub_ones_read, stub_write, m, "pcie-mmio");
     machine_add_device(m, 0x4010000000ULL, 0x10000000, stub_ones_read, stub_write, m, "pcie-ecam");

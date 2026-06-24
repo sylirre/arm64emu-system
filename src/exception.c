@@ -51,5 +51,18 @@ void exception_take(CPU *c, ExcKind kind, u64 esr, u64 far, u64 ret_addr) {
 }
 
 void cpu_raise_sync(CPU *c, u64 esr, u64 far) {
+    unsigned ec = (unsigned)(esr >> 26);
+    if (g_iabort_log && (ec == 0x20 || ec == 0x21)) {   /* instruction aborts */
+        static int n = 0;
+        if (n++ < 60)
+            fprintf(stderr, "[iabort] el=%u far=0x%llx esr=0x%llx\n",
+                    c->el, (unsigned long long)far, (unsigned long long)esr);
+    }
+    if (g_tpc && c->cur_insn_pc == g_tpc) {
+        fprintf(stderr, "[sync] faulting pc=0x%llx esr=0x%llx (ec=0x%llx) far=0x%llx\n",
+                (unsigned long long)c->cur_insn_pc, (unsigned long long)esr,
+                (unsigned long long)(esr >> 26), (unsigned long long)far);
+        ring_dump();
+    }
     exception_take(c, EXC_SYNC, esr, far, c->cur_insn_pc);
 }

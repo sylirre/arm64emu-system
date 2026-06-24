@@ -160,5 +160,14 @@ extern int g_trace;        /* per-instruction trace */
 extern int g_singlestep;   /* unused placeholder for parity with QEMU */
 extern int g_dbg;          /* targeted device/IRQ debug (env AEDBG) */
 extern int g_rtrace;       /* compact register trace for differential debugging */
+extern int g_prof;         /* hot-PC profiler (env AEPROF) */
+void prof_dump(void);      /* print the hottest PCs (no-op unless g_prof) */
+extern u64 g_tpc;          /* env AETPC: dump CPU state when pc == this */
+extern int g_ring;         /* env AERING: ring-buffer recent steps */
+void ring_dump(void);      /* print the recent-instruction ring buffer */
+extern u64 g_watch;        /* env AEWATCH: log writes to [g_watch, g_watch+8) */
+extern int g_debug_hooks;  /* OR of all per-step debug facilities (perf guard) */
+extern int g_iabort_log;   /* env AEIABORT: log instruction aborts */
+void cov_load(const char *path);  /* load QEMU coverage PC set (divergence finder) */
 
 #endif /* A64_CPU_H */

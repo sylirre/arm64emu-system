@@ -5,6 +5,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
+#include <unistd.h>
+
+/* On SIGINT/SIGTERM (e.g. a wall-clock `timeout` during a long boot), restore
+ * the terminal and flush the diagnostics so a killed run still yields a profile
+ * and the last PC — important since WFI idle makes -maxinsn slow in wall time. */
+static CPU *g_sig_cpu;
+static void on_signal(int sig) {
+    (void)sig;
+    tty_raw_disable();
+    if (g_sig_cpu) { cpu_dump(g_sig_cpu); ring_dump(); }
+    prof_dump();
+    _exit(0);
+}
 
 /* Devices / platform wiring (added in M3). Declared weakly here so M0/M1 link. */
 void platform_build(Machine *m) __attribute__((weak));
@@ -65,6 +79,15 @@ int main(int argc, char **argv) {
     }
 
     if (getenv("AEDBG")) g_dbg = atoi(getenv("AEDBG"));
+    if (getenv("AEPROF")) g_prof = atoi(getenv("AEPROF"));
+    if (getenv("AETPC")) g_tpc = strtoull(getenv("AETPC"), 0, 0);
+    if (getenv("AERING")) g_ring = atoi(getenv("AERING"));
+    if (getenv("AEWATCH")) g_watch = strtoull(getenv("AEWATCH"), 0, 0);
+    if (getenv("AEIABORT")) g_iabort_log = atoi(getenv("AEIABORT"));
+    if (getenv("AECOV")) { g_ring = 1; cov_load(getenv("AECOV")); }
+    /* Any per-instruction debug facility routes through the single hot-path guard.
+     * (g_ring is also set by AECOV, so the coverage finder is covered too.) */
+    g_debug_hooks = g_trace | g_rtrace | g_prof | g_ring | (g_tpc != 0);
 
     Machine m;
     machine_init(&m, ram_mb << 20);
@@ -97,6 +120,9 @@ int main(int argc, char **argv) {
 
     cpu_reset(&m.cpu, entry, (unsigned)reset_el);
 
+    g_sig_cpu = &m.cpu;
+    signal(SIGINT, on_signal);
+    signal(SIGTERM, on_signal);
     tty_raw_enable();
 
     unsigned long ticker = 0;
@@ -112,11 +138,13 @@ int main(int argc, char **argv) {
             fprintf(stderr, "[maxinsn reached at icount=%llu]\n",
                     (unsigned long long)m.cpu.icount);
             cpu_dump(&m.cpu);
+            ring_dump();
             break;
         }
     }
 
     tty_raw_disable();
+    prof_dump();
     machine_free(&m);
     return 0;
 }

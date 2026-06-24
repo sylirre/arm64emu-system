@@ -17,7 +17,13 @@ typedef struct {
 } TLBEntry;
 static TLBEntry tlb[TLB_ENTRIES];
 
-void tlb_flush_all(void) { memset(tlb, 0, sizeof(tlb)); }
+/* Instruction-fetch fast-path cache (single CPU, like the TLB above). */
+FetchCache g_fcache;
+
+void tlb_flush_all(void) {
+    memset(tlb, 0, sizeof(tlb));
+    g_fcache.host = NULL;   /* mapping may have changed; force a re-translate */
+}
 
 static inline unsigned tlb_idx(u64 va) { return (unsigned)((va >> 12) & (TLB_ENTRIES - 1)); }
 
@@ -148,9 +154,30 @@ bool mem_write(CPU *c, u64 va, unsigned size, u64 val) {
     return true;
 }
 
-bool mem_ifetch(CPU *c, u64 va, u32 *insn_out) {
+/* Return a host pointer to the start of a guest physical page if it is backed
+ * by RAM or flash, else NULL (MMIO / unmapped — must go through the bus). */
+static u8 *host_page_ptr(Machine *m, u64 pa_page) {
+    if (pa_page >= m->ram_base && pa_page + 0x1000 <= m->ram_base + m->ram_size)
+        return m->ram + (pa_page - m->ram_base);
+    if (pa_page >= m->flash_base && pa_page + 0x1000 <= m->flash_base + m->flash_size)
+        return m->flash + (pa_page - m->flash_base);
+    return NULL;
+}
+
+bool mem_ifetch_slow(CPU *c, u64 va, u32 *insn_out) {
     u64 pa;
     if (!mmu_translate(c, va, ACC_EXEC, &pa)) return false;
+    u8 *hp = host_page_ptr(c->m, pa & ~0xfffULL);
+    if (hp) {
+        /* Cache the page translation; bytes are still read live from *host. */
+        g_fcache.host = hp;
+        g_fcache.page = va & ~0xfffULL;
+        g_fcache.el0  = (u8)(c->el == 0);
+        g_fcache.mmu  = (u8)(c->sctlr[1] & 1);
+        __builtin_memcpy(insn_out, hp + (va & 0xfffULL), 4);
+        return true;
+    }
+    /* Executing from MMIO/unmapped space: read through the bus, do not cache. */
     u64 v = phys_read(c->m, pa, 4);
     if (c->m->last_bus_status != BUS_OK) return raise_abort(c, va, ACC_EXEC, FSC_EXTERNAL);
     *insn_out = (u32)v;

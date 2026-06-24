@@ -41,6 +41,18 @@ typedef struct Machine {
     u8 *flash; u64 flash_base, flash_size;
     bool flash_writable;          /* simple RAM-backed flash writes (CFI added later) */
 
+    /* NOR flash CFI (Intel pflash_cfi01) state, per 64 MB bank. EDK2 keeps its
+     * UEFI variable store in the flash and drives it with the Intel command set
+     * (read-id/CFI, block erase, word/buffer program, status polling). */
+    struct FlashCFI {
+        u8  mode;       /* read mode: array/status/id/cfi */
+        u8  prog;       /* program/erase phase state machine */
+        u8  status;     /* status register (0x80 = ready) */
+        u32 buf_base;   /* buffered-program base offset */
+        u32 buf_cnt;    /* buffered-program word count */
+        u32 buf_seen;   /* buffered words written so far */
+    } flash_cfi[2];
+
     MMIODev dev[MAX_DEVS];
     int ndev;
 

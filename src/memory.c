@@ -12,7 +12,8 @@ void machine_init(Machine *m, u64 ram_size) {
     m->flash_base = FLASH_BASE;
     m->flash_size = FLASH_SIZE;
     m->flash = calloc(1, m->flash_size);
-    m->flash_writable = true;   /* naive flash writes for now; CFI emulation TBD */
+    m->flash_writable = true;
+    m->flash_cfi[0].status = m->flash_cfi[1].status = 0x80;  /* CFI status: WSM ready */
     if (!m->ram || !m->flash) {
         fprintf(stderr, "fatal: out of memory allocating guest RAM/flash\n");
         exit(1);
@@ -37,6 +38,101 @@ void machine_add_device(Machine *m, u64 base, u64 size, mmio_read_fn r,
     d->opaque = opaque; d->name = name;
 }
 
+/* ---------- NOR flash: Intel CFI (pflash_cfi01) command set ----------
+ * EDK2 ArmVirtQemu stores UEFI variables in flash and drives it with the Intel
+ * command set. We complete every program/erase instantly (status always ready).
+ * Instruction fetch reads the array directly (mem_ifetch fast path) and is
+ * unaffected by the command mode, matching real hardware (code runs from a bank
+ * left in read-array mode). Block size matches EDK2's NorFlashQemuLib: 256 KB. */
+enum { FL_ARRAY = 0, FL_STATUS, FL_ID, FL_CFI };
+enum { PG_NONE = 0, PG_WORD, PG_ERASE, PG_BUFCNT, PG_BUFDATA, PG_BUFCONF };
+#define FL_BLOCK   0x40000ULL          /* 256 KB erase block (SIZE_256KB) */
+#define FL_STAT_RDY 0x80               /* SR.7: write state machine ready */
+
+/* Program (clear bits) `size` bytes at flash offset `off` with `val`. */
+static void flash_program(Machine *m, u64 off, unsigned size, u64 val) {
+    for (unsigned i = 0; i < size; i++)
+        m->flash[off + i] &= (u8)(val >> (i * 8));
+}
+
+/* CFI command write to the flash bank containing `off`. */
+static void flash_cfi_write(Machine *m, u64 off, unsigned size, u64 val) {
+    struct FlashCFI *s = &m->flash_cfi[off >= FLASH_BANK ? 1 : 0];
+    unsigned cmd = val & 0xff;
+
+    switch (s->prog) {                 /* data phases consume the write as data */
+    case PG_WORD:
+        flash_program(m, off, size, val); s->prog = PG_NONE; s->mode = FL_STATUS; return;
+    case PG_BUFCNT:
+        s->buf_cnt = (u32)((val & 0xffff) + 1); s->buf_seen = 0;
+        s->buf_base = (u32)off; s->prog = PG_BUFDATA; return;
+    case PG_BUFDATA:
+        flash_program(m, off, size, val);
+        if (++s->buf_seen >= s->buf_cnt) s->prog = PG_BUFCONF;
+        return;
+    case PG_BUFCONF:
+        if (cmd == 0xd0) { s->prog = PG_NONE; s->mode = FL_STATUS; }
+        return;
+    case PG_ERASE:
+        if (cmd == 0xd0) {             /* erase confirm: wipe the 256 KB block */
+            u64 base = off & ~(FL_BLOCK - 1);
+            memset(m->flash + base, 0xff, FL_BLOCK);
+            s->status = FL_STAT_RDY; s->prog = PG_NONE; s->mode = FL_STATUS;
+        }
+        return;
+    }
+
+    switch (cmd) {                     /* command phase */
+    case 0xff: case 0xf0: s->mode = FL_ARRAY;  break;   /* read array */
+    case 0x70:            s->mode = FL_STATUS; break;   /* read status */
+    case 0x50:            s->status = FL_STAT_RDY; break; /* clear status */
+    case 0x90:            s->mode = FL_ID;     break;   /* read identifier */
+    case 0x98:            s->mode = FL_CFI;    break;   /* CFI query */
+    case 0x10: case 0x40: s->prog = PG_WORD;   s->mode = FL_STATUS; break; /* word program */
+    case 0x20:            s->prog = PG_ERASE;  s->mode = FL_STATUS; break; /* block erase */
+    case 0xe8:            s->prog = PG_BUFCNT; s->mode = FL_STATUS; break; /* buffer program */
+    default: break;
+    }
+}
+
+/* Minimal Intel CFI query table (byte at CFI word offset). */
+static u8 cfi_query_byte(u64 word_off) {
+    switch (word_off) {
+    case 0x10: return 'Q';  case 0x11: return 'R';  case 0x12: return 'Y';
+    case 0x13: return 0x01; case 0x14: return 0x00;       /* primary cmd set: Intel */
+    case 0x27: return 0x1a;                                /* device size: 2^26 = 64 MB */
+    case 0x28: return 0x02; case 0x29: return 0x00;       /* x16 async interface */
+    case 0x2a: return 0x05; case 0x2b: return 0x00;       /* max write buffer 2^5 = 32 B */
+    case 0x2c: return 0x01;                                /* one erase region */
+    case 0x2d: return 0xff; case 0x2e: return 0x00;       /* (256-1) blocks */
+    case 0x2f: return 0x00; case 0x30: return 0x04;       /* 0x0400*256 = 256 KB block */
+    default:   return 0x00;
+    }
+}
+
+/* CFI read from the flash bank containing `off`. Returns true if handled (mode
+ * other than read-array); *out holds the value. */
+static bool flash_cfi_read(Machine *m, u64 off, unsigned size, u64 *out) {
+    struct FlashCFI *s = &m->flash_cfi[off >= FLASH_BANK ? 1 : 0];
+    if (s->mode == FL_ARRAY) return false;          /* normal array read */
+    u64 bank_off = off & (FLASH_BANK - 1);
+    u64 v = 0;
+    for (unsigned i = 0; i < size; i++) {
+        u8 b = 0;
+        if (s->mode == FL_STATUS) b = (i & 1) ? 0 : s->status;     /* SR in each x16 lane */
+        else if (s->mode == FL_ID) {
+            u64 wo = (bank_off + i) >> 1;            /* x16 word offset */
+            b = ((bank_off + i) & 1) ? 0 : (wo == 0 ? 0x89 : wo == 1 ? 0x18 : 0x00);
+        } else /* FL_CFI */ {
+            u64 wo = (bank_off + i) >> 1;
+            b = ((bank_off + i) & 1) ? 0 : cfi_query_byte(wo);
+        }
+        v |= (u64)b << (i * 8);
+    }
+    *out = v;
+    return true;
+}
+
 static MMIODev *find_dev(Machine *m, u64 pa) {
     for (int i = 0; i < m->ndev; i++) {
         MMIODev *d = &m->dev[i];
@@ -59,15 +155,15 @@ u64 phys_read(Machine *m, u64 pa, unsigned size) {
         if (n++ < 40) fprintf(stderr, "[dtbrd] pa=0x%llx size=%u pc=0x%llx\n",
                               (unsigned long long)pa, size, (unsigned long long)m->cpu.cur_insn_pc);
     }
-    u8 *p = NULL;
-    if (pa >= m->ram_base && pa + size <= m->ram_base + m->ram_size)
-        p = m->ram + (pa - m->ram_base);
-    else if (pa >= m->flash_base && pa + size <= m->flash_base + m->flash_size)
-        p = m->flash + (pa - m->flash_base);
-
-    if (p) {
+    if (pa >= m->ram_base && pa + size <= m->ram_base + m->ram_size) {
         u64 v = 0;
-        memcpy(&v, p, size);
+        memcpy(&v, m->ram + (pa - m->ram_base), size);
+        return v;
+    }
+    if (pa >= m->flash_base && pa + size <= m->flash_base + m->flash_size) {
+        u64 off = pa - m->flash_base, v = 0;
+        if (flash_cfi_read(m, off, size, &v)) return v;   /* status/id/cfi mode */
+        memcpy(&v, m->flash + off, size);                 /* read-array mode */
         return v;
     }
     MMIODev *d = find_dev(m, pa);
@@ -86,13 +182,17 @@ void phys_write(Machine *m, u64 pa, unsigned size, u64 value) {
         fprintf(stderr, "[wwatch] pa=0x%llx size=%u val=0x%llx pc=0x%llx\n",
                 (unsigned long long)pa, size, (unsigned long long)value,
                 (unsigned long long)m->cpu.cur_insn_pc);
+    if (g_watch && pa < g_watch + 8 && pa + size > g_watch)
+        fprintf(stderr, "[watch] pa=0x%llx size=%u val=0x%llx pc=0x%llx icount=%llu\n",
+                (unsigned long long)pa, size, (unsigned long long)value,
+                (unsigned long long)m->cpu.cur_insn_pc,
+                (unsigned long long)m->cpu.icount);
     if (pa >= m->ram_base && pa + size <= m->ram_base + m->ram_size) {
         memcpy(m->ram + (pa - m->ram_base), &value, size);
         return;
     }
     if (pa >= m->flash_base && pa + size <= m->flash_base + m->flash_size) {
-        if (m->flash_writable)
-            memcpy(m->flash + (pa - m->flash_base), &value, size);
+        flash_cfi_write(m, pa - m->flash_base, size, value);   /* Intel CFI commands */
         return;
     }
     MMIODev *d = find_dev(m, pa);

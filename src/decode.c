@@ -1,6 +1,7 @@
 /* A64 instruction decoder/executor — integer/branch/load-store (M1).
  * FP/SIMD lives in exec_fpsimd.c (M4). System regs in sysreg.c (M2). */
 #include "cpu.h"
+#include <string.h>
 #include "mmu.h"
 #include "esr.h"
 #include "sysreg.h"
@@ -63,6 +64,18 @@ static u64 shift_reg(u64 v, unsigned type, unsigned amount, bool is64) {
                             : (u64)(u32)((s32)(u32)v >> amount);
         default: return is64 ? ror64(v, amount) : ror32((u32)v, amount); /* ROR */
     }
+}
+
+/* ARMv8 CRC32/CRC32C: bit-reflected CRC over `bytes` low bytes of `data`,
+ * accumulator `acc`. poly is the reflected polynomial (0xEDB88320 for CRC32,
+ * 0x82F63B78 for CRC32C). Matches the hardware instruction the kernel uses. */
+static u32 crc32_step(u32 acc, u64 data, unsigned bytes, u32 poly) {
+    for (unsigned i = 0; i < bytes; i++) {
+        acc ^= (u32)((data >> (8 * i)) & 0xff);
+        for (int k = 0; k < 8; k++)
+            acc = (acc >> 1) ^ (poly & (u32)(-(s32)(acc & 1)));
+    }
+    return acc;
 }
 
 static u64 extend_reg(u64 v, unsigned option, unsigned shift) {
@@ -369,6 +382,14 @@ static void dp_register(CPU *c, u32 insn) {
                     case 0x09: r = shift_reg(n, 1, m, sf); break;  /* LSRV */
                     case 0x0a: r = shift_reg(n, 2, m, sf); break;  /* ASRV */
                     case 0x0b: r = shift_reg(n, 3, m, sf); break;  /* RORV */
+                    case 0x10: r = crc32_step((u32)n, m, 1, 0xEDB88320); break; /* CRC32B  */
+                    case 0x11: r = crc32_step((u32)n, m, 2, 0xEDB88320); break; /* CRC32H  */
+                    case 0x12: r = crc32_step((u32)n, m, 4, 0xEDB88320); break; /* CRC32W  */
+                    case 0x13: r = crc32_step((u32)n, m, 8, 0xEDB88320); break; /* CRC32X  */
+                    case 0x14: r = crc32_step((u32)n, m, 1, 0x82F63B78); break; /* CRC32CB */
+                    case 0x15: r = crc32_step((u32)n, m, 2, 0x82F63B78); break; /* CRC32CH */
+                    case 0x16: r = crc32_step((u32)n, m, 4, 0x82F63B78); break; /* CRC32CW */
+                    case 0x17: r = crc32_step((u32)n, m, 8, 0x82F63B78); break; /* CRC32CX */
                     default: undefined(c, insn); return;
                 }
                 set_x_sz(c, Rd, sf, r);
@@ -441,7 +462,7 @@ static void ldst_register(CPU *c, u32 insn) {
     } else {
         unsigned mode = BITS(11, 10);
         s64 imm9 = (s64)sign_extend(BITS(20, 12), 9);
-        if (mode == 0) va = base + imm9;            /* unscaled */
+        if (mode == 0 || mode == 2) va = base + imm9; /* unscaled / unprivileged STTR/LDTR */
         else if (mode == 1) { va = base; wb = 1; }  /* post */
         else if (mode == 3) { va = base + imm9; wb = 2; } /* pre */
         else { undefined(c, insn); return; }
@@ -458,7 +479,7 @@ static void ldst_register(CPU *c, u32 insn) {
 static void ldst_pair(CPU *c, u32 insn) {
     unsigned opc = BITS(31, 30);
     bool V = BIT(26);
-    unsigned mode = BITS(25, 23);   /* 001 post,010 offset,011 pre */
+    unsigned mode = BITS(25, 23);   /* 000 STNP/LDNP,001 post,010 offset,011 pre */
     bool L = BIT(22);
     s64 imm7 = (s64)sign_extend(BITS(21, 15), 7);
     unsigned Rt2 = BITS(14, 10), Rn = BITS(9, 5), Rt = BITS(4, 0);
@@ -472,6 +493,7 @@ static void ldst_pair(CPU *c, u32 insn) {
     u64 base = reg_xsp(c, Rn), addr;
     bool wb = false; u64 wbval = 0;
     switch (mode) {
+        case 0: addr = base + offset; break;                            /* STNP/LDNP (non-temporal) */
         case 1: addr = base; wb = true; wbval = base + offset; break;   /* post */
         case 2: addr = base + offset; break;                            /* offset */
         case 3: addr = base + offset; wb = true; wbval = addr; break;   /* pre */
@@ -556,9 +578,62 @@ static void ldst_exclusive(CPU *c, u32 insn) {
     }
 }
 
+/* AdvSIMD load/store multiple structures: LD1/ST1 (contiguous, 1-4 registers)
+ * and LD2/3/4/ST2/3/4 (de-interleaved). Used pervasively for memcpy/memset and
+ * NEON block I/O by both EDK2 and Linux. Supports the post-indexed form. */
+static void ldst_vector_multi(CPU *c, u32 insn) {
+    unsigned Q = BIT(30), post = BIT(23), L = BIT(22), Rm = BITS(20, 16);
+    unsigned opcode = BITS(15, 12), size = BITS(11, 10), Rn = BITS(9, 5), Rt = BITS(4, 0);
+    unsigned nregs, sel;     /* sel = interleave factor (1 = contiguous LD1/ST1) */
+    switch (opcode) {
+        case 0x0: nregs = 4; sel = 4; break;   /* LD4/ST4 */
+        case 0x2: nregs = 4; sel = 1; break;   /* LD1/ST1 x4 */
+        case 0x4: nregs = 3; sel = 3; break;   /* LD3/ST3 */
+        case 0x6: nregs = 3; sel = 1; break;   /* LD1/ST1 x3 */
+        case 0x7: nregs = 1; sel = 1; break;   /* LD1/ST1 x1 */
+        case 0x8: nregs = 2; sel = 2; break;   /* LD2/ST2 */
+        case 0xa: nregs = 2; sel = 1; break;   /* LD1/ST1 x2 */
+        default: undefined(c, insn); return;
+    }
+    unsigned regbytes = Q ? 16 : 8;
+    u64 base = reg_xsp(c, Rn), addr = base;
+    unsigned total = nregs * regbytes;
+
+    if (sel == 1) {                            /* contiguous: whole registers */
+        for (unsigned r = 0; r < nregs; r++) {
+            unsigned vt = (Rt + r) & 31;
+            if (L) {
+                V128 v; v.d[0] = v.d[1] = 0;
+                if (Q) { if (!mem_read128(c, addr, &v)) return; }
+                else   { u64 t; if (!mem_read(c, addr, 8, &t)) return; v.d[0] = t; }
+                c->v[vt] = v;
+            } else {
+                if (Q) { if (!mem_write128(c, addr, &c->v[vt])) return; }
+                else   { if (!mem_write(c, addr, 8, c->v[vt].d[0])) return; }
+            }
+            addr += regbytes;
+        }
+    } else {                                   /* de-interleaved element by element */
+        unsigned ebytes = 1u << size, elems = regbytes / ebytes;
+        if (L) for (unsigned r = 0; r < nregs; r++) { c->v[(Rt + r) & 31].d[0] = 0; c->v[(Rt + r) & 31].d[1] = 0; }
+        for (unsigned e = 0; e < elems; e++)
+            for (unsigned r = 0; r < nregs; r++) {
+                unsigned vt = (Rt + r) & 31, off = e * ebytes;
+                if (L) { u64 t = 0; if (!mem_read(c, addr, ebytes, &t)) return; memcpy(&c->v[vt].b[off], &t, ebytes); }
+                else   { u64 t = 0; memcpy(&t, &c->v[vt].b[off], ebytes); if (!mem_write(c, addr, ebytes, t)) return; }
+                addr += ebytes;
+            }
+    }
+
+    if (post) set_xsp(c, Rn, base + ((Rm == 31) ? total : reg_x(c, Rm)));
+}
+
 static void loads_stores(CPU *c, u32 insn) {
     unsigned b2927 = BITS(29, 27);
     if (b2927 == 0x1 && BITS(26, 24) == 0) { ldst_exclusive(c, insn); return; }
+    if (b2927 == 0x1 && BIT(26) == 1 && BIT(25) == 0 && BIT(24) == 0) {
+        ldst_vector_multi(c, insn); return;    /* AdvSIMD load/store multiple structures */
+    }
     if (b2927 == 0x3 && BITS(25, 24) == 0) { ldst_literal(c, insn); return; }
     if (b2927 == 0x5) { ldst_pair(c, insn); return; }
     if (b2927 == 0x7) { ldst_register(c, insn); return; }

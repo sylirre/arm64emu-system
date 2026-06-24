@@ -6,7 +6,9 @@ CSTD    ?= -std=c11
 OPT     ?= -O2
 WARN     = -Wall -Wextra -Wno-unused-parameter
 DEFS     = -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
-CFLAGS  ?= $(CSTD) $(OPT) $(WARN) $(DEFS) -g
+# -fno-math-errno lets __builtin_sqrt/fabs inline to hardware FP ops, so the
+# scalar-FP interpreter needs no libm (keeping the build libc-only, no -lm).
+CFLAGS  ?= $(CSTD) $(OPT) $(WARN) $(DEFS) -fno-math-errno -g
 LDFLAGS ?=
 LDLIBS   =
 

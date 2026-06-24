@@ -15,7 +15,37 @@ bool mmu_translate(CPU *c, u64 va, AccType acc, u64 *pa_out);
  * instruction and let the exception take effect). On success, *out holds data. */
 bool mem_read(CPU *c, u64 va, unsigned size, u64 *out);
 bool mem_write(CPU *c, u64 va, unsigned size, u64 val);
-bool mem_ifetch(CPU *c, u64 va, u32 *insn_out);
+
+/* Instruction-fetch fast path. Caches the host base pointer of the current code
+ * page so sequential fetches skip the TLB hash + bus dispatch. Only the page
+ * *translation* is cached (a host base pointer), never decoded bytes — the
+ * instruction word is read live, so decompressed/self-modifying code in the page
+ * is reflected immediately. Cleared by tlb_flush_all (the same invalidation
+ * contract the software TLB already relies on; the tag also carries EL0/MMU
+ * state so EL or MMU-enable changes fall through to the slow path). */
+typedef struct {
+    u64  page;   /* VA page base of the cached translation */
+    u8  *host;   /* host pointer to that guest page (RAM/flash); NULL = invalid */
+    u8   el0;    /* EL0 flag of the cached translation */
+    u8   mmu;    /* SCTLR_EL1.M of the cached translation */
+} FetchCache;
+extern FetchCache g_fcache;
+
+/* Slow path: translate, refresh the fetch cache, read. Used on a cache miss. */
+bool mem_ifetch_slow(CPU *c, u64 va, u32 *insn_out);
+
+static inline bool mem_ifetch(CPU *c, u64 va, u32 *insn_out) {
+    u64 page = va & ~0xfffULL;
+    if (g_fcache.host && g_fcache.page == page &&
+        g_fcache.el0 == (u8)(c->el == 0) &&
+        g_fcache.mmu == (u8)(c->sctlr[1] & 1)) {
+        u32 v;
+        __builtin_memcpy(&v, g_fcache.host + (va & 0xfffULL), 4);
+        *insn_out = v;
+        return true;
+    }
+    return mem_ifetch_slow(c, va, insn_out);
+}
 
 /* Block helpers for SIMD 128-bit and pair accesses (two 64-bit halves). */
 bool mem_read128(CPU *c, u64 va, V128 *out);

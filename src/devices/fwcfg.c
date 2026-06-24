@@ -3,6 +3,7 @@
 #include "../devices.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 /* legacy selector keys */
 #define FW_SIGNATURE   0x0000
@@ -113,6 +114,10 @@ static void do_dma(FwCfg *f, u64 addr) {
 
     if (control & DMA_READ) {
         FwItem *it = find(f, f->sel);
+        if (g_dbg >= 2)
+            fprintf(stderr, "[fwcfg] DMA read sel=0x%x off=%u len=%u present=%d itemlen=%u icount=%llu\n",
+                    f->sel, f->offset, length, it != NULL, it ? it->len : 0,
+                    (unsigned long long)m->cpu.icount);
         for (u32 i = 0; i < length; i++) {
             u8 b = (it && f->offset < it->len) ? it->data[f->offset] : 0;
             phys_write(m, target + i, 1, b);
