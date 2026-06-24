@@ -25,9 +25,16 @@ bool smccc_conduit(CPU *c, bool is_hvc) {
             u32 q = (u32)c->x[1];
             ret = (q == PSCI_CPU_ON64 || q == PSCI_SYSTEM_OFF ||
                    q == PSCI_SYSTEM_RESET || q == PSCI_VERSION ||
+                   q == PSCI_CPU_SUSPEND64 ||
                    q == PSCI_AFFINITY_INFO64) ? PSCI_OK : PSCI_NOT_SUPPORTED;
             break;
         }
+        case PSCI_CPU_SUSPEND64:
+            /* Low-power suspend. We model only standby/retention: halt until an
+             * interrupt (WFI semantics) and return success to the caller. */
+            c->halted = true;
+            ret = PSCI_OK;
+            break;
         case PSCI_AFFINITY_INFO64:   ret = (c->x[1] == 0) ? 0 /*ON*/ : 1 /*OFF*/; break;
         case PSCI_MIGRATE_INFO_TYPE: ret = 2; break;                /* not present */
         case PSCI_CPU_ON64:          ret = PSCI_NOT_SUPPORTED; break; /* single core */
