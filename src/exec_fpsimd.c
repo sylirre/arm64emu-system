@@ -477,8 +477,8 @@ static void simd_two_misc(CPU *c, u32 insn) {
         u64 a = velem_get(&c->v[Rn], size, i), v;
         switch ((U << 5) | opc) {
             case (0 << 5) | 0x08: v = (sx(a,esize) >  0) ? emask : 0; break;   /* CMGT #0 */
-            case (1 << 5) | 0x08: v = (a == 0) ? emask : 0; break;             /* CMGE #0 (U) -> CMHS? */
-            case (0 << 5) | 0x09: v = (sx(a,esize) >= 0) ? emask : 0; break;   /* CMEQ #0 (signed ge) */
+            case (1 << 5) | 0x08: v = (sx(a,esize) >= 0) ? emask : 0; break;   /* CMGE #0 */
+            case (0 << 5) | 0x09: v = (a == 0) ? emask : 0; break;             /* CMEQ #0 */
             case (1 << 5) | 0x09: v = (sx(a,esize) <= 0) ? emask : 0; break;   /* CMLE #0 */
             case (0 << 5) | 0x0a: v = (sx(a,esize) <  0) ? emask : 0; break;   /* CMLT #0 */
             case (0 << 5) | 0x05: v = (u64)__builtin_popcount((unsigned)(a & 0xff)); break; /* CNT */

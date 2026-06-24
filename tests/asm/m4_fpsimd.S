@@ -78,6 +78,30 @@ _start:
     umov    x0, v12.d[0]
     CKX     x0, 0x0202020202020202, 14
 
+    /* Compare-against-zero (two-reg misc). v0.8b bytes (lane0..7):
+     * 0x00(0) 0x01(+1) 0x7f(+127) 0x80(-128) 0xff(-1) 0x00(0) 0x40(+64) 0xc0(-64)
+     * Guards the CMEQ#0 / CMGE#0 distinction (null-byte test in libc strlen). */
+    movz    x5, #0x0100
+    movk    x5, #0x807f, lsl #16
+    movk    x5, #0x00ff, lsl #32
+    movk    x5, #0xc040, lsl #48
+    fmov    d0, x5
+    cmeq    v1.8b, v0.8b, #0            /* ==0   */
+    umov    x0, v1.d[0]
+    CKX     x0, 0x0000ff00000000ff, 15
+    cmgt    v2.8b, v0.8b, #0            /* >0  (signed) */
+    umov    x0, v2.d[0]
+    CKX     x0, 0x00ff000000ffff00, 16
+    cmge    v3.8b, v0.8b, #0            /* >=0 (signed) */
+    umov    x0, v3.d[0]
+    CKX     x0, 0x00ffff0000ffffff, 17
+    cmle    v4.8b, v0.8b, #0            /* <=0 (signed) */
+    umov    x0, v4.d[0]
+    CKX     x0, 0xff00ffffff0000ff, 18
+    cmlt    v5.8b, v0.8b, #0            /* <0  (signed) */
+    umov    x0, v5.d[0]
+    CKX     x0, 0xff0000ffff000000, 19
+
     movz    x0, #0
     hlt     #0
 fail:
