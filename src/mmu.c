@@ -115,15 +115,22 @@ bool mmu_translate(CPU *c, u64 va, AccType acc, u64 *pa_out) {
     unsigned i = tlb_idx(va);
     TLBEntry *e = &tlb[i];
     u64 page = va & ~0xfffULL;
-    if (e->valid && e->va_page == page && e->el0 == (c->el == 0)) {
-        if (!perm_ok(c, acc, e->ap, e->uxn, e->pxn)) {
-            raise_abort(c, va, acc, FSC_PERM_L3);
-            return false;
-        }
+    if (e->valid && e->va_page == page && e->el0 == (c->el == 0)
+        && perm_ok(c, acc, e->ap, e->uxn, e->pxn)) {
         *pa_out = e->pa_page | (va & 0xfff);
         return true;
     }
 
+    /* Either a TLB miss, or a hit whose cached permissions deny this access.
+     * In the latter case do NOT fault on the stale entry: arm64 software may
+     * make a descriptor more permissive (set AF, set the dirty/write bits on a
+     * COW or first-write fault) WITHOUT issuing a TLBI, relying on a hardware
+     * re-walk when the cached restrictive entry causes a spurious permission
+     * fault. So always re-walk from the table before deciding; only a fresh
+     * walk that still denies the access is a real fault. Without this, the
+     * kernel's in-place RO->RW upgrade (e.g. copy_to_user hitting a write-
+     * protected COW page) is never observed and the access faults forever -> the
+     * copy returns EFAULT ("Bad address"). */
     u64 pa_page; u8 ap, uxn, pxn;
     unsigned fsc = walk(c, va, &pa_page, &ap, &uxn, &pxn);
     if (fsc) { raise_abort(c, va, acc, fsc); return false; }
