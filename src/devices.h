@@ -41,7 +41,8 @@ void gic_update(GIC *g);
 typedef struct ARMTimer { CPU *cpu; GIC *gic; } ARMTimer;
 ARMTimer *gtimer_create(Machine *m);
 void timer_update(Machine *m);
-u64  timer_next_deadline_ns(Machine *m);   /* host-ns until next fire, or ~0 */
+u64  timer_next_deadline_ns(Machine *m);     /* host-ns until next fire, or ~0 */
+u64  timer_next_deadline_ticks(Machine *m);  /* instructions until next fire, or ~0 */
 
 /* ---- PL011 UART ---- */
 typedef struct PL011 {

@@ -79,7 +79,8 @@ typedef struct CPU {
     u64 cntv_ctl, cntv_cval;
     u64 cntkctl_el1;
     s64 cntvoff;
-    u64 cntpct_base;   /* host ns at which the virtual counter == 0 */
+    u64 cntpct_base;   /* AE_RTCLOCK mode: host ns at which the counter == 0 */
+    u64 timer_skip;    /* deterministic mode: virtual ticks fast-forwarded over WFI idle */
 
     /* Exclusive monitor (global, single-CPU) */
     bool excl_valid;
@@ -168,6 +169,8 @@ void ring_dump(void);      /* print the recent-instruction ring buffer */
 extern u64 g_watch;        /* env AEWATCH: log writes to [g_watch, g_watch+8) */
 extern int g_debug_hooks;  /* OR of all per-step debug facilities (perf guard) */
 extern int g_iabort_log;   /* env AEIABORT: log instruction aborts */
+extern int g_rtclock;      /* env AE_RTCLOCK: drive the generic timer from the host
+                              clock instead of the deterministic instruction count */
 void cov_load(const char *path);  /* load QEMU coverage PC set (divergence finder) */
 
 #endif /* A64_CPU_H */

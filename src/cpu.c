@@ -15,6 +15,7 @@ u64 g_tpc = 0;       /* env AETPC: dump state whenever pc == this (debug) */
 int g_ring = 0;      /* env AERING: record a ring buffer of recent steps */
 u64 g_watch = 0;     /* env AEWATCH: log writes to [g_watch, g_watch+8) */
 int g_iabort_log = 0;/* env AEIABORT: log instruction aborts (debug) */
+int g_rtclock = 0;   /* env AE_RTCLOCK: host-clock timer (default = deterministic) */
 
 /* Coverage-divergence finder (env AECOV=file): a sorted set of PCs QEMU is known
  * to execute. The first PC our run executes that is NOT in this set marks where

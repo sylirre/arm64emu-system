@@ -84,6 +84,7 @@ int main(int argc, char **argv) {
     if (getenv("AERING")) g_ring = atoi(getenv("AERING"));
     if (getenv("AEWATCH")) g_watch = strtoull(getenv("AEWATCH"), 0, 0);
     if (getenv("AEIABORT")) g_iabort_log = atoi(getenv("AEIABORT"));
+    if (getenv("AE_RTCLOCK")) g_rtclock = atoi(getenv("AE_RTCLOCK"));
     if (getenv("AECOV")) { g_ring = 1; cov_load(getenv("AECOV")); }
     /* Any per-instruction debug facility routes through the single hot-path guard.
      * (g_ring is also set by AECOV, so the coverage finder is covered too.) */

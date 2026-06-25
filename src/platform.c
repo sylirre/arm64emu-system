@@ -89,6 +89,34 @@ void machine_tick(Machine *m) {
 
 void machine_wait_for_event(Machine *m) {
     CPU *c = &m->cpu;
+
+    if (!g_rtclock) {
+        /* Deterministic timer: the counter only advances as instructions retire,
+         * so while halted in WFI it would never reach the next deadline. Jump the
+         * virtual clock forward by exactly the ticks remaining to the nearest
+         * armed timer, so the IRQ fires at a fixed, reproducible icount. */
+        u64 dl = timer_next_deadline_ticks(m);
+
+        /* Service interactive input without perturbing the guest clock. On a tty
+         * with no timer pending, block briefly so we don't busy-spin a host core;
+         * otherwise just peek. Non-tty stdin (e.g. /dev/null) never has input. */
+        int has_input = 0;
+        if (isatty(STDIN_FILENO)) {
+            struct pollfd pfd = { .fd = STDIN_FILENO, .events = POLLIN };
+            has_input = poll(&pfd, 1, (dl == ~0ULL) ? 50 : 0) > 0;
+        } else if (dl == ~0ULL && !c->irq_line) {
+            poll(NULL, 0, 50);   /* truly idle, no timer armed: don't peg a core */
+        }
+
+        if (!c->irq_line && !has_input && dl != ~0ULL)
+            c->timer_skip += dl;     /* fast-forward to the nearest timer deadline */
+
+        machine_tick(m);             /* re-evaluate the timer line at the new count */
+        if (c->irq_line || has_input) c->halted = false;
+        return;
+    }
+
+    /* Real-time mode (AE_RTCLOCK): pace against the host monotonic clock. */
     u64 dl = timer_next_deadline_ns(m);
     int timeout_ms;
     if (dl == 0) timeout_ms = 0;
