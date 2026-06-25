@@ -1,7 +1,14 @@
-/* PL031 real-time clock (minimal: returns host wall-clock seconds). */
+/* PL031 real-time clock (minimal: host wall-clock seconds, or a fixed epoch in
+ * deterministic mode). The host clock is the last non-reproducible input into
+ * the guest, so by default (deterministic, !g_rtclock) we return a fixed base
+ * to keep the whole boot bit-for-bit reproducible; AE_RTCLOCK=1 restores live
+ * host time. Matches the generic timer's AE_RTCLOCK gating. */
 #include "../devices.h"
 #include <stdlib.h>
 #include <time.h>
+
+/* Fixed wall-clock base for deterministic mode: 2025-01-01T00:00:00Z. */
+#define RTC_FIXED_EPOCH 1735689600u
 
 static const u8 pl031_id[8] = { 0x31, 0x10, 0x14, 0x00, 0x0d, 0xf0, 0x05, 0xb1 };
 
@@ -9,7 +16,10 @@ static u64 rtc_read(void *opaque, u64 off, unsigned size) {
     PL031 *p = opaque;
     if (off >= 0xfe0 && off <= 0xffc) return pl031_id[(off - 0xfe0) / 4];
     switch (off) {
-        case 0x00: return (u32)time(NULL) + p->lr;   /* DR */
+        case 0x00: {                                 /* DR */
+            u32 base = g_rtclock ? (u32)time(NULL) : RTC_FIXED_EPOCH;
+            return base + p->lr;
+        }
         case 0x04: return p->mr;
         case 0x08: return p->lr;
         case 0x0c: return p->cr;
