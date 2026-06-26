@@ -923,6 +923,20 @@ static void simd_permute(CPU *c, u32 insn) {
     c->v[Rd] = r;
 }
 
+/* AdvSIMD EXT: concatenate Vn:Vm (Vm at low bytes, Vn at high bytes) and
+ * extract nbyte bytes starting at byte offset imm4. */
+static void simd_ext(CPU *c, u32 insn) {
+    unsigned Q = BIT(30), Rm = BITS(20, 16);
+    unsigned imm4 = BITS(14, 11), Rn = BITS(9, 5), Rd = BITS(4, 0);
+    unsigned nbyte = Q ? 16 : 8;
+    V128 n = c->v[Rn], m = c->v[Rm], r; r.d[0] = r.d[1] = 0;
+    for (unsigned i = 0; i < nbyte; i++) {
+        unsigned j = i + imm4;
+        r.b[i] = (j < nbyte) ? m.b[j] : n.b[j - nbyte];
+    }
+    c->v[Rd] = r;
+}
+
 void exec_fpsimd(CPU *c, u32 insn) {
     /* Scalar floating-point (bit30=0 distinguishes from scalar AdvSIMD). */
     if ((insn & 0x7f000000) == 0x1e000000) { exec_fp_scalar(c, insn); return; }
@@ -960,6 +974,11 @@ void exec_fpsimd(CPU *c, u32 insn) {
     if (BIT(31) == 0 && BIT(29) == 0 && BITS(28, 24) == 0x0e && BITS(23, 21) == 0 &&
         BIT(15) == 0 && BITS(11, 10) == 0) {
         simd_tbl(c, insn); return;
+    }
+    /* AdvSIMD EXT (byte extract from concatenated pair). */
+    if (BIT(31) == 0 && BIT(29) == 1 && BITS(28, 24) == 0x0e &&
+        BITS(23, 22) == 0 && BIT(21) == 0 && BIT(15) == 0 && BITS(11, 10) == 0) {
+        simd_ext(c, insn); return;
     }
     /* AdvSIMD permute (ZIP/UZP/TRN). */
     if (BIT(31) == 0 && BIT(29) == 0 && BITS(28, 24) == 0x0e && BIT(21) == 0 &&
