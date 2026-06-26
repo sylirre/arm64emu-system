@@ -59,7 +59,17 @@ void platform_build(Machine *m) {
 
     /* Absent-device stubs covering the QEMU 'virt' regions we don't model. */
     machine_add_device(m, 0x09030000, 0x1000,       stub_zero_read, stub_write, m, "gpio-stub");
-    machine_add_device(m, 0x0a000000, 0x4000,       virtio_mmio_read, stub_write, m, "virtio-mmio");
+
+    /* virtio-mmio: with -drive, slot 0 hosts a real virtio-blk device and the
+     * remaining 31 slots stay empty (DeviceID=0); otherwise all 32 are empty.
+     * The blk device must be registered before the empty-slot stub so find_dev's
+     * first-match dispatch resolves slot 0 to it (no overlapping range). */
+    if (m->drive) {
+        virtio_blk_create(m, m->gic, m->drive);
+        machine_add_device(m, 0x0a000200, 0x3e00,   virtio_mmio_read, stub_write, m, "virtio-mmio");
+    } else {
+        machine_add_device(m, 0x0a000000, 0x4000,   virtio_mmio_read, stub_write, m, "virtio-mmio");
+    }
     machine_add_device(m, 0x3eff0000, 0x10000,      stub_ones_read, stub_write, m, "pcie-pio");
     machine_add_device(m, 0x10000000, 0x2eff0000,   stub_ones_read, stub_write, m, "pcie-mmio");
     machine_add_device(m, 0x4010000000ULL, 0x10000000, stub_ones_read, stub_write, m, "pcie-ecam");

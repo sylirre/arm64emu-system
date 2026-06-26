@@ -17,6 +17,7 @@
 #define INTID_TIMER_PHYS 30   /* PPI 14 (NS EL1 physical timer) */
 #define INTID_UART       33   /* SPI 1  */
 #define INTID_RTC        34   /* SPI 2  */
+#define INTID_VIRTIO0    48   /* SPI 16 (virtio-mmio slot 0) */
 
 /* ---- GICv2 ---- */
 #define GIC_NUM_IRQS 256
@@ -65,5 +66,9 @@ void fwcfg_add_file(FwCfg *f, const char *name, const void *data, u32 len);
 void fwcfg_set_legacy_kernel(FwCfg *f, const void *kernel, u32 ksize,
                              const void *initrd, u32 isize,
                              const char *cmdline);
+
+/* ---- virtio-blk (virtio-mmio slot 0) ---- */
+struct VirtIOBlk;
+struct VirtIOBlk *virtio_blk_create(Machine *m, GIC *gic, const char *path);
 
 #endif /* A64_DEVICES_H */

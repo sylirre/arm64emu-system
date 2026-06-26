@@ -33,6 +33,7 @@ struct PL011;
 struct PL031;
 struct FwCfg;
 struct ARMTimer;
+struct VirtIOBlk;
 
 typedef struct Machine {
     CPU cpu;
@@ -62,6 +63,9 @@ typedef struct Machine {
     struct PL011    *uart;
     struct PL031    *rtc;
     struct FwCfg    *fwcfg;
+    struct VirtIOBlk *blk;
+
+    const char *drive;            /* -drive image path, or NULL (no block device) */
 
     BusStatus last_bus_status;    /* set by phys_* on fault */
 } Machine;

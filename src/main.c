@@ -45,12 +45,12 @@ static u8 *read_file(const char *path, size_t *len_out) {
 static void usage(const char *p) {
     fprintf(stderr,
         "usage: %s [-bios FW.fd] [-kernel Image] [-initrd cpio] [-append CMDLINE]\n"
-        "          [-m MB] [-bin FLAT@ADDR] [-entry ADDR] [-el N] [-d] [-maxinsn N]\n", p);
+        "          [-drive IMG] [-m MB] [-bin FLAT@ADDR] [-entry ADDR] [-el N] [-d] [-maxinsn N]\n", p);
 }
 
 int main(int argc, char **argv) {
     const char *bios = NULL, *kernel = NULL, *initrd = NULL, *append = "";
-    const char *binfile = NULL, *dtbfile = NULL;
+    const char *binfile = NULL, *dtbfile = NULL, *drive = NULL;
     u64 ram_mb = 1024;
     u64 entry = 0;
     int reset_el = 1;
@@ -69,6 +69,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-rt")) g_rtrace = 1;
         else if (!strcmp(argv[i], "-maxinsn") && i + 1 < argc) max_insn = strtoull(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "-dtb") && i + 1 < argc) dtbfile = argv[++i];
+        else if (!strcmp(argv[i], "-drive") && i + 1 < argc) drive = argv[++i];
         else if (!strcmp(argv[i], "-bin") && i + 1 < argc) {
             /* FILE or FILE@ADDR */
             char *s = argv[++i];
@@ -96,6 +97,7 @@ int main(int argc, char **argv) {
 
     Machine m;
     machine_init(&m, ram_mb << 20);
+    m.drive = drive;            /* consumed by platform_build (virtio-blk slot 0) */
 
     if (bios) {
         size_t n; u8 *fw = read_file(bios, &n);
