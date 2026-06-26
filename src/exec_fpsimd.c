@@ -147,6 +147,18 @@ static void simd_copy(CPU *c, u32 insn) {
     }
 }
 
+/* AdvSIMD scalar copy: the sole member is DUP(element)->scalar, i.e.
+ * MOV <V><d>, <Vn>.<T>[index]. Unlike the vector DUP it writes exactly one
+ * element and zeroes the rest (bit30 here is a fixed 1, not a Q field). */
+static void simd_scalar_copy(CPU *c, u32 insn) {
+    unsigned imm5 = BITS(20, 16), Rn = BITS(9, 5), Rd = BITS(4, 0);
+    unsigned size = (imm5 & 1) ? 0 : (imm5 & 2) ? 1 : (imm5 & 4) ? 2 : 3;
+    unsigned index = imm5 >> (size + 1);
+    V128 r; r.d[0] = r.d[1] = 0;
+    velem_set(&r, size, 0, velem_get(&c->v[Rn], size, index));
+    c->v[Rd] = r;
+}
+
 /* ---------------- Scalar floating-point (single/double) ---------------- *
  * Implemented with the host's IEEE-754 float/double (the host is IEEE-754 LE,
  * matching the guest). Covers convert, arithmetic, compare, select, FMOV and
@@ -923,8 +935,10 @@ static void simd_permute(CPU *c, u32 insn) {
     c->v[Rd] = r;
 }
 
-/* AdvSIMD EXT: concatenate Vn:Vm (Vm at low bytes, Vn at high bytes) and
- * extract nbyte bytes starting at byte offset imm4. */
+/* AdvSIMD EXT: extract nbyte bytes starting at byte offset imm4 from the
+ * concatenation Vm:Vn (Vn at the low bytes, Vm at the high bytes), per the ARM
+ * pseudocode operand3 = V[m]:V[n]. (Vn and Vm only coincide when Rn==Rm, e.g.
+ * the half-swap idiom, which hid this swap until GHASH used distinct regs.) */
 static void simd_ext(CPU *c, u32 insn) {
     unsigned Q = BIT(30), Rm = BITS(20, 16);
     unsigned imm4 = BITS(14, 11), Rn = BITS(9, 5), Rd = BITS(4, 0);
@@ -932,7 +946,7 @@ static void simd_ext(CPU *c, u32 insn) {
     V128 n = c->v[Rn], m = c->v[Rm], r; r.d[0] = r.d[1] = 0;
     for (unsigned i = 0; i < nbyte; i++) {
         unsigned j = i + imm4;
-        r.b[i] = (j < nbyte) ? m.b[j] : n.b[j - nbyte];
+        r.b[i] = (j < nbyte) ? n.b[j] : m.b[j - nbyte];
     }
     c->v[Rd] = r;
 }
@@ -958,8 +972,9 @@ void exec_fpsimd(CPU *c, u32 insn) {
     if (BITS(31, 24) == 0x4e && BITS(23, 22) == 0 && BITS(21, 17) == 0x14 && BITS(11, 10) == 2) {
         crypto_aes(c, insn); return;
     }
-    /* Cryptographic 3-register SHA (SHA1C/P/M/SU0, SHA256H/H2/SU1). */
-    if (BITS(31, 24) == 0x5e && BITS(23, 21) == 0 && BIT(15) == 0) {
+    /* Cryptographic 3-register SHA (SHA1C/P/M/SU0, SHA256H/H2/SU1). bits[11:10]=0
+     * distinguishes these from AdvSIMD scalar copy (DUP), which has bit10=1. */
+    if (BITS(31, 24) == 0x5e && BITS(23, 21) == 0 && BIT(15) == 0 && BITS(11, 10) == 0) {
         crypto_sha3(c, insn); return;
     }
     /* Cryptographic 2-register SHA (SHA1H/SHA1SU1/SHA256SU0). */
@@ -975,9 +990,10 @@ void exec_fpsimd(CPU *c, u32 insn) {
         BIT(15) == 0 && BITS(11, 10) == 0) {
         simd_tbl(c, insn); return;
     }
-    /* AdvSIMD EXT (byte extract from concatenated pair). */
+    /* AdvSIMD EXT (byte extract from concatenated pair). Only bit10 is fixed 0;
+     * bit11 is imm4<0>, so guarding BITS(11,10)==0 would drop odd indices. */
     if (BIT(31) == 0 && BIT(29) == 1 && BITS(28, 24) == 0x0e &&
-        BITS(23, 22) == 0 && BIT(21) == 0 && BIT(15) == 0 && BITS(11, 10) == 0) {
+        BITS(23, 22) == 0 && BIT(21) == 0 && BIT(15) == 0 && BIT(10) == 0) {
         simd_ext(c, insn); return;
     }
     /* AdvSIMD permute (ZIP/UZP/TRN). */
@@ -996,6 +1012,10 @@ void exec_fpsimd(CPU *c, u32 insn) {
     if (BITS(28, 23) == 0x3e && BIT(10) == 1 && BITS(22, 19) != 0) { simd_scalar_shift(c, insn); return; }
     /* AdvSIMD copy (DUP/INS/UMOV/SMOV). */
     if (BITS(28, 21) == 0x70 && BIT(15) == 0 && BIT(10) == 1) { simd_copy(c, insn); return; }
+    /* AdvSIMD scalar copy (DUP element -> scalar: MOV Dd, Vn.D[i], etc.). */
+    if (BITS(31, 21) == 0x2f0 && BIT(15) == 0 && BITS(14, 11) == 0 && BIT(10) == 1) {
+        simd_scalar_copy(c, insn); return;
+    }
 
     fpsimd_undef(c, insn);
 }

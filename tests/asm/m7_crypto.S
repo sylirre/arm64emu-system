@@ -236,6 +236,34 @@ _start:
     fmov    w0, s3
     CKX     x0, 0x40200000, 47
 
+    /* AdvSIMD scalar copy (DUP element -> scalar): MOV Dd,Vn.D[1] / MOV Sd,Vn.S[2] */
+    adr     x10, bytes0_15
+    ld1     {v4.16b}, [x10]            /* v4.d[0]=..0100, v4.d[1]=0f..08 */
+    mov     d8, v4.d[1]               /* 0x5e180488: high 64 -> scalar, zero rest */
+    umov    x0, v8.d[0]
+    CKX     x0, 0x0f0e0d0c0b0a0908, 48
+    umov    x0, v8.d[1]
+    CKX     x0, 0x0000000000000000, 49
+    mov     s9, v4.s[2]               /* bytes 8..11 -> scalar */
+    umov    w0, v9.s[0]
+    CKX     x0, 0x0b0a0908, 50
+
+    /* EXT with distinct Vn/Vm (concat is Vm:Vn; Vn=low). v1=00..0f, v2=10..1f */
+    adr     x10, bytes0_15
+    ld1     {v1.16b}, [x10]
+    adr     x10, tbl_table            /* 0x10..0x1f */
+    ld1     {v2.16b}, [x10]
+    ext     v0.16b, v1.16b, v2.16b, #8
+    umov    x0, v0.d[0]
+    CKX     x0, 0x0f0e0d0c0b0a0908, 51
+    umov    x0, v0.d[1]
+    CKX     x0, 0x1716151413121110, 52
+    ext     v0.16b, v1.16b, v2.16b, #1
+    umov    x0, v0.d[0]
+    CKX     x0, 0x0807060504030201, 53
+    umov    x0, v0.d[1]
+    CKX     x0, 0x100f0e0d0c0b0a09, 54
+
     movz    x0, #0
     hlt     #0
 fail:
