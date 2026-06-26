@@ -264,6 +264,37 @@ _start:
     umov    x0, v0.d[1]
     CKX     x0, 0x100f0e0d0c0b0a09, 54
 
+    /* AdvSIMD multiply-by-element (vector x indexed). vn={2,-2,4,5}.4s, vm.s[2]=5 */
+    adr     x10, mbe_vn
+    ld1     {v14.4s}, [x10]
+    adr     x10, mbe_vm
+    ld1     {v7.4s}, [x10]
+    umull   v0.2d, v14.2s, v7.s[2]     /* 0x2f87a9d7 form: {2*5, 0xfffffffe*5} */
+    umov    x0, v0.d[0]
+    CKX     x0, 0x0a, 55
+    umov    x0, v0.d[1]
+    CKX     x0, 0x4fffffff6, 56
+    smull   v0.2d, v14.2s, v7.s[2]     /* signed: d[1] = -2*5 = -10 */
+    umov    x0, v0.d[1]
+    CKX     x0, 0xfffffffffffffff6, 57
+    umull2  v0.2d, v14.4s, v7.s[2]     /* high half {4*5, 5*5} */
+    umov    x0, v0.d[0]
+    CKX     x0, 0x14, 58
+    umov    x0, v0.d[1]
+    CKX     x0, 0x19, 59
+    adr     x10, mbe_accd
+    ld1     {v0.2d}, [x10]             /* {100, 200} */
+    umlal   v0.2d, v14.2s, v7.s[2]     /* {110, 200 + 0xfffffffe*5} */
+    umov    x0, v0.d[0]
+    CKX     x0, 0x6e, 60
+    umov    x0, v0.d[1]
+    CKX     x0, 0x5000000be, 61
+    mul     v0.4s, v14.4s, v7.s[2]     /* same-size: {10, -10, 20, 25} */
+    umov    x0, v0.d[0]
+    CKX     x0, 0xfffffff60000000a, 62
+    umov    x0, v0.d[1]
+    CKX     x0, 0x0000001900000014, 63
+
     movz    x0, #0
     hlt     #0
 fail:
@@ -289,6 +320,13 @@ pw_n:
     .word 0xfffffffe, 0x00000005, 0x00000003, 0xfffffffd
 pw_m:
     .word 0x00000009, 0xfffffffc, 0x00000008, 0x00000006
+mbe_vn:
+    .word 2, 0xfffffffe, 4, 5
+mbe_vm:
+    .word 9, 8, 5, 6
+.balign 16
+mbe_accd:
+    .quad 100, 200
 
 .balign 16
 sha_iv:

@@ -505,6 +505,49 @@ static void simd_three_same(CPU *c, u32 insn) {
     c->v[Rd] = r;
 }
 
+/* AdvSIMD vector x indexed element: integer multiply-by-element group --
+ * MUL/MLA/MLS (same size) and S/U MULL/MLAL/MLSL (widening long; bit30=Q
+ * selects the SMULL2-style high source half). The Vm element is broadcast; its
+ * index is built from H:L:M with a size-dependent split (and .H restricts Vm to
+ * V0-V15). Poly1305 (poly1305-armv8) leans on UMULL/UMLAL by element, so this
+ * unblocks the ChaCha20-Poly1305 TLS suite. */
+static void simd_indexed(CPU *c, u32 insn) {
+    unsigned Q = BIT(30), U = BIT(29), size = BITS(23, 22), opc = BITS(15, 12);
+    unsigned Rn = BITS(9, 5), Rd = BITS(4, 0);
+    unsigned L = BIT(21), H = BIT(11), M = BIT(20), Rm, index;
+    if (size == 1)      { Rm = BITS(19, 16); index = (H << 2) | (L << 1) | M; }  /* .H src */
+    else if (size == 2) { Rm = BITS(20, 16); index = (H << 1) | L; }             /* .S src */
+    else { fpsimd_undef(c, insn); return; }   /* .B/.D have no integer by-element */
+
+    unsigned esize = 8u << size;
+    u64 emask = (1ULL << esize) - 1;
+    V128 vn = c->v[Rn], vm = c->v[Rm], vd = c->v[Rd], r; r.d[0] = r.d[1] = 0;
+    u64 elt = velem_get(&vm, size, index) & emask;
+    s64 selt = sx(elt, esize);
+
+    if ((opc == 0x8 && !U) || (opc == 0x0 && U) || (opc == 0x4 && U)) {  /* MUL/MLA/MLS */
+        unsigned n = (Q ? 16u : 8u) >> size;
+        for (unsigned i = 0; i < n; i++) {
+            u64 a = velem_get(&vn, size, i) & emask, prod = a * elt;
+            u64 v = (opc == 0x8) ? prod
+                  : (opc == 0x0) ? velem_get(&vd, size, i) + prod
+                                 : velem_get(&vd, size, i) - prod;
+            velem_set(&r, size, i, v & emask);
+        }
+    } else if (opc == 0xa || opc == 0x2 || opc == 0x6) {                 /* S/U MULL/MLAL/MLSL */
+        unsigned ndest = 64u / esize, base = Q ? ndest : 0, dsize = size + 1;
+        u64 dmask = (2 * esize >= 64) ? ~0ULL : ((1ULL << (2 * esize)) - 1);
+        for (unsigned i = 0; i < ndest; i++) {
+            u64 a = velem_get(&vn, size, base + i) & emask;
+            u64 prod = U ? (elt * a) : (u64)(selt * sx(a, esize));
+            u64 d = velem_get(&vd, dsize, i);
+            u64 v = (opc == 0xa) ? prod : (opc == 0x2) ? d + prod : d - prod;
+            velem_set(&r, dsize, i, v & dmask);
+        }
+    } else { fpsimd_undef(c, insn); return; }
+    c->v[Rd] = r;
+}
+
 /* AdvSIMD across-lanes reductions: ADDV/UMAXV/UMINV/SMAXV/SMINV (horizontal
  * reduce of a vector to a scalar element in Rd). Used by string routines to
  * collapse a per-byte compare mask into a single found/not-found value. */
@@ -1015,6 +1058,10 @@ void exec_fpsimd(CPU *c, u32 insn) {
     /* AdvSIMD scalar copy (DUP element -> scalar: MOV Dd, Vn.D[i], etc.). */
     if (BITS(31, 21) == 0x2f0 && BIT(15) == 0 && BITS(14, 11) == 0 && BIT(10) == 1) {
         simd_scalar_copy(c, insn); return;
+    }
+    /* AdvSIMD vector x indexed element (integer multiply-by-element group). */
+    if (BIT(31) == 0 && BITS(28, 24) == 0x0f && BIT(10) == 0) {
+        simd_indexed(c, insn); return;
     }
 
     fpsimd_undef(c, insn);
