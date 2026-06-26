@@ -157,6 +157,21 @@ _start:
     umov    x0, v3.d[0]
     CKX     x0, 0xfff0000000000000, 29
 
+    /* Scalar fixed-point convert (bit21=0, #fbits scale): SCVTF/UCVTF int->fp
+     * divides by 2^fbits; FCVTZS/FCVTZU fp->int multiplies then truncates. */
+    movz    w4, #10
+    scvtf   d0, w4, #2                  /* 10 / 2^2 = 2.5 */
+    fmov    x0, d0
+    CKX     x0, 0x4004000000000000, 30  /* 2.5 */
+    fcvtzs  w0, d0, #2                  /* trunc(2.5 * 4) = 10 */
+    CKX     x0, 10, 31
+    movz    w4, #6
+    ucvtf   s1, w4, #1                  /* 6 / 2 = 3.0 (single) */
+    fmov    w0, s1
+    CKX     x0, 0x40400000, 32          /* 3.0f */
+    fcvtzu  w0, s1, #1                  /* trunc(3.0 * 2) = 6 */
+    CKX     x0, 6, 33
+
     movz    x0, #0
     hlt     #0
 fail:

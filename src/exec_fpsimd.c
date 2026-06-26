@@ -253,7 +253,41 @@ static void exec_fp_scalar(CPU *c, u32 insn) {
         fpsimd_undef(c, insn); return;
     }
 
-    if (BIT(21) != 1) { fpsimd_undef(c, insn); return; }  /* fixed-point convert: on demand */
+    /* Floating-point <-> fixed-point conversion (bit21==0): the integer side
+     * carries #fbits fractional bits (fbits = 64 - scale). SCVTF/UCVTF divide
+     * the integer by 2^fbits; FCVTZS/FCVTZU multiply the float by 2^fbits then
+     * round toward zero (saturating). Emitted by libc float formatting. */
+    if (BIT(21) == 0) {
+        unsigned sf = BIT(31), rmode = BITS(20, 19), opcode = BITS(18, 16);
+        unsigned fbits = 64 - BITS(15, 10);
+        bool x64 = sf != 0;
+        u64 pb = (u64)(fbits + 1023) << 52; double pow2; memcpy(&pow2, &pb, 8); /* 2^fbits, exact */
+        if (rmode == 0 && (opcode == 2 || opcode == 3)) {       /* SCVTF / UCVTF: fixed -> fp */
+            if (dbl) {
+                double iv = (opcode == 2) ? (x64 ? (double)(s64)reg_x(c, Rn) : (double)(s32)reg_x(c, Rn))
+                                          : (x64 ? (double)(u64)reg_x(c, Rn) : (double)(u32)reg_x(c, Rn));
+                fp_wr_d(c, Rd, iv / pow2);
+            } else {
+                float iv = (opcode == 2) ? (x64 ? (float)(s64)reg_x(c, Rn) : (float)(s32)reg_x(c, Rn))
+                                         : (x64 ? (float)(u64)reg_x(c, Rn) : (float)(u32)reg_x(c, Rn));
+                fp_wr_s(c, Rd, iv / (float)pow2);
+            }
+            return;
+        }
+        if (rmode == 3 && (opcode == 0 || opcode == 1)) {       /* FCVTZS / FCVTZU: fp -> fixed */
+            double r = f_trunc((dbl ? fp_rd_d(c, Rn) : (double)fp_rd_s(c, Rn)) * pow2);
+            if (opcode == 0) {   /* signed */
+                if (x64) { s64 m = (r >= 9223372036854775807.0) ? INT64_MAX : (r <= -9223372036854775808.0) ? INT64_MIN : (s64)r; set_x(c, Rd, (u64)m); }
+                else     { s32 m = (r >= 2147483647.0) ? INT32_MAX : (r <= -2147483648.0) ? INT32_MIN : (s32)r; set_x(c, Rd, (u64)(u32)m); }
+            } else {             /* unsigned */
+                if (r < 0) r = 0;
+                if (x64) { u64 m = (r >= 18446744073709551615.0) ? UINT64_MAX : (u64)r; set_x(c, Rd, m); }
+                else     { u32 m = (r >= 4294967295.0) ? UINT32_MAX : (u32)r; set_x(c, Rd, m); }
+            }
+            return;
+        }
+        fpsimd_undef(c, insn); return;   /* other bit21==0 encodings: on demand */
+    }
 
     unsigned o2 = BITS(11, 10);
     if (o2 == 0) {
