@@ -170,6 +170,12 @@ static float  fp_rd_s(CPU *c, unsigned n) { float  x; u32 b = c->v[n].s[0]; memc
 static void fp_wr_d(CPU *c, unsigned d, double x) { u64 b; memcpy(&b, &x, 8); c->v[d].d[0] = b; c->v[d].d[1] = 0; }
 static void fp_wr_s(CPU *c, unsigned d, float  x) { u32 b; memcpy(&b, &x, 4); c->v[d].d[0] = b; c->v[d].d[1] = 0; }
 
+/* Per-lane FP <-> bits accessors for vector ops (lane i of a V128). */
+static float  vget_s(const V128 *v, unsigned i) { float  x; u32 b = v->s[i]; memcpy(&x, &b, 4); return x; }
+static double vget_d(const V128 *v, unsigned i) { double x; u64 b = v->d[i]; memcpy(&x, &b, 8); return x; }
+static void   vset_s(V128 *v, unsigned i, float  x) { u32 b; memcpy(&b, &x, 4); v->s[i] = b; }
+static void   vset_d(V128 *v, unsigned i, double x) { u64 b; memcpy(&b, &x, 8); v->d[i] = b; }
+
 /* Rounding without libm: values >= 2^52 are already integral; otherwise round
  * via an integer cast (which truncates toward zero) and adjust. __builtin_fabs
  * and __builtin_sqrt are inlined to hardware ops (see -fno-math-errno). */
@@ -427,12 +433,185 @@ static void exec_fp_dp3(CPU *c, u32 insn) {
 /* Sign-extend an `esize`-bit element value to s64. */
 static s64 sx(u64 v, unsigned esize) { return (s64)sign_extend(v, esize); }
 
+/* ===================== Floating-point vector helpers =====================
+ * Computed in host float/double. NaN-payload propagation, denormal flushing and
+ * non-default rounding modes are NOT bit-exact to ARM (same caveat as the scalar
+ * FP path); normal values match. FMAX/FMIN propagate NaN (unlike host fmax);
+ * FMAXNM/FMINNM return the numeric operand. */
+#define FOP_ADD 0
+#define FOP_SUB 1
+#define FOP_MUL 2
+#define FOP_DIV 3
+#define FOP_MLA 4
+#define FOP_MLS 5
+#define FOP_MAX 6
+#define FOP_MIN 7
+#define FOP_MAXNM 8
+#define FOP_MINNM 9
+#define FOP_ABD 10
+#define FOP_MULX 11
+#define FOP_RECPS 12
+#define FOP_RSQRTS 13
+
+static double fop_d(unsigned op, double n, double m, double d) {
+    switch (op) {
+        case FOP_ADD: return n + m;
+        case FOP_SUB: return n - m;
+        case FOP_MUL: return n * m;
+        case FOP_DIV: return n / m;
+        case FOP_MLA: return d + n * m;
+        case FOP_MLS: return d - n * m;
+        case FOP_ABD: return __builtin_fabs(n - m);
+        case FOP_RECPS:  return 2.0 - n * m;
+        case FOP_RSQRTS: return (3.0 - n * m) / 2.0;
+        case FOP_MULX:
+            if ((__builtin_isinf(n) && m == 0.0) || (__builtin_isinf(m) && n == 0.0))
+                return (__builtin_signbit(n) ^ __builtin_signbit(m)) ? -2.0 : 2.0;
+            return n * m;
+        case FOP_MAX:
+            if (__builtin_isnan(n) || __builtin_isnan(m)) return n + m;
+            if (n == m) return __builtin_signbit(n) ? m : n;   /* +0 > -0 */
+            return n > m ? n : m;
+        case FOP_MIN:
+            if (__builtin_isnan(n) || __builtin_isnan(m)) return n + m;
+            if (n == m) return __builtin_signbit(n) ? n : m;
+            return n < m ? n : m;
+        case FOP_MAXNM:
+            if (__builtin_isnan(n)) return m;
+            if (__builtin_isnan(m)) return n;
+            return fop_d(FOP_MAX, n, m, d);
+        case FOP_MINNM:
+            if (__builtin_isnan(n)) return m;
+            if (__builtin_isnan(m)) return n;
+            return fop_d(FOP_MIN, n, m, d);
+    }
+    return 0.0;
+}
+static float fop_s(unsigned op, float n, float m, float d) {
+    switch (op) {
+        case FOP_ADD: return n + m;
+        case FOP_SUB: return n - m;
+        case FOP_MUL: return n * m;
+        case FOP_DIV: return n / m;
+        case FOP_MLA: return d + n * m;
+        case FOP_MLS: return d - n * m;
+        case FOP_ABD: return __builtin_fabsf(n - m);
+        case FOP_RECPS:  return 2.0f - n * m;
+        case FOP_RSQRTS: return (3.0f - n * m) / 2.0f;
+        case FOP_MULX:
+            if ((__builtin_isinf(n) && m == 0.0f) || (__builtin_isinf(m) && n == 0.0f))
+                return (__builtin_signbit(n) ^ __builtin_signbit(m)) ? -2.0f : 2.0f;
+            return n * m;
+        case FOP_MAX:
+            if (__builtin_isnan(n) || __builtin_isnan(m)) return n + m;
+            if (n == m) return __builtin_signbit(n) ? m : n;
+            return n > m ? n : m;
+        case FOP_MIN:
+            if (__builtin_isnan(n) || __builtin_isnan(m)) return n + m;
+            if (n == m) return __builtin_signbit(n) ? n : m;
+            return n < m ? n : m;
+        case FOP_MAXNM:
+            if (__builtin_isnan(n)) return m;
+            if (__builtin_isnan(m)) return n;
+            return fop_s(FOP_MAX, n, m, d);
+        case FOP_MINNM:
+            if (__builtin_isnan(n)) return m;
+            if (__builtin_isnan(m)) return n;
+            return fop_s(FOP_MIN, n, m, d);
+    }
+    return 0.0f;
+}
+
+/* AdvSIMD three-same floating-point: opcodes 0x18..0x1f (FADD/FSUB/FMUL/FDIV/
+ * FMLA/FMLS/FMAX/FMIN/FMAXNM/FMINNM/FMULX/FRECPS/FRSQRTS/FABD, the compares
+ * FCMEQ/FCMGE/FCMGT/FACGE/FACGT, and the pairwise FADDP/FMAXP/FMINP/FMAXNMP/
+ * FMINNMP). bit23=a selects the variant page, bit22=sz precision. */
+static void simd_three_same_fp(CPU *c, u32 insn) {
+    unsigned Q = BIT(30), U = BIT(29), a = BIT(23), sz = BIT(22), opc = BITS(15, 11);
+    unsigned Rm = BITS(20, 16), Rn = BITS(9, 5), Rd = BITS(4, 0);
+    unsigned key = (U << 6) | (a << 5) | opc;
+    V128 vn = c->v[Rn], vm = c->v[Rm], vd = c->v[Rd], r; r.d[0] = r.d[1] = 0;
+
+    int pair = (U == 1) && (opc == 0x18 || opc == 0x1e || (opc == 0x1a && a == 0));
+    int cmp  = (opc == 0x1c) || (opc == 0x1d);   /* FCMEQ/GE/GT, FACGE/GT */
+    unsigned op;
+    switch (key) {                                 /* full (U:a:opc) key */
+        case 0x18: op = FOP_MAXNM;  break;         /* FMAXNM */
+        case 0x38: op = FOP_MINNM;  break;         /* FMINNM */
+        case 0x19: op = FOP_MLA;    break;         /* FMLA   */
+        case 0x39: op = FOP_MLS;    break;         /* FMLS   */
+        case 0x1a: op = FOP_ADD;    break;         /* FADD   */
+        case 0x3a: op = FOP_SUB;    break;         /* FSUB   */
+        case 0x1b: op = FOP_MULX;   break;         /* FMULX  */
+        case 0x1e: op = FOP_MAX;    break;         /* FMAX   */
+        case 0x3e: op = FOP_MIN;    break;         /* FMIN   */
+        case 0x1f: op = FOP_RECPS;  break;         /* FRECPS */
+        case 0x3f: op = FOP_RSQRTS; break;         /* FRSQRTS*/
+        case 0x5b: op = FOP_MUL;    break;         /* FMUL   */
+        case 0x5f: op = FOP_DIV;    break;         /* FDIV   */
+        case 0x7a: op = FOP_ABD;    break;         /* FABD   */
+        case 0x58: op = FOP_MAXNM;  break;         /* FMAXNMP */
+        case 0x5a: op = FOP_ADD;    break;         /* FADDP   */
+        case 0x5e: op = FOP_MAX;    break;         /* FMAXP   */
+        case 0x78: op = FOP_MINNM;  break;         /* FMINNMP */
+        case 0x7e: op = FOP_MIN;    break;         /* FMINP   */
+        default:   op = FOP_ADD;    break;         /* compares: handled via `cmp` */
+    }
+
+    if (sz) {                                       /* double: .2d (Q=1) */
+        unsigned n = Q ? 2 : 1;
+        if (pair) {
+            for (unsigned i = 0; i < n; i++) {
+                const V128 *src = (i < n/2) ? &vn : &vm;
+                unsigned base = (i < n/2) ? 2*i : 2*(i - n/2);
+                vset_d(&r, i, fop_d(op, vget_d(src, base), vget_d(src, base+1), 0));
+            }
+            c->v[Rd] = r; return;
+        }
+        for (unsigned i = 0; i < n; i++) {
+            double x = vget_d(&vn, i), y = vget_d(&vm, i);
+            if (cmp) {
+                int t = (opc == 0x1c) ? (key == 0x1c ? x == y : key == 0x5c ? x >= y : x > y)
+                      : (key == 0x5d ? __builtin_fabs(x) >= __builtin_fabs(y)
+                                     : __builtin_fabs(x) >  __builtin_fabs(y));
+                r.d[i] = t ? ~0ULL : 0; continue;
+            }
+            vset_d(&r, i, fop_d(op, x, y, vget_d(&vd, i)));
+        }
+        c->v[Rd] = r; return;
+    }
+
+    /* single: .2s (Q=0, lanes 0..1) or .4s (Q=1, lanes 0..3) */
+    unsigned n = Q ? 4 : 2;
+    if (pair) {
+        for (unsigned i = 0; i < n; i++) {
+            const V128 *src = (i < n/2) ? &vn : &vm;
+            unsigned base = (i < n/2) ? 2*i : 2*(i - n/2);
+            vset_s(&r, i, fop_s(op, vget_s(src, base), vget_s(src, base+1), 0));
+        }
+        c->v[Rd] = r; return;
+    }
+    for (unsigned i = 0; i < n; i++) {
+        float x = vget_s(&vn, i), y = vget_s(&vm, i);
+        if (cmp) {
+            int t = (opc == 0x1c) ? (key == 0x1c ? x == y : key == 0x5c ? x >= y : x > y)
+                  : (key == 0x5d ? __builtin_fabsf(x) >= __builtin_fabsf(y)
+                                 : __builtin_fabsf(x) >  __builtin_fabsf(y));
+            r.s[i] = t ? 0xffffffffu : 0; continue;
+        }
+        vset_s(&r, i, fop_s(op, x, y, vget_s(&vd, i)));
+    }
+    c->v[Rd] = r;
+}
+
 /* AdvSIMD three-same (vector integer): element-wise ADD/SUB/compare/min/max/mul
  * and the bitwise logical group. The workhorse vector group for string/memory
  * routines (CMEQ/CMHS...) in EDK2 and Linux. */
 static void simd_three_same(CPU *c, u32 insn) {
     unsigned Q = BIT(30), U = BIT(29), size = BITS(23, 22);
     unsigned Rm = BITS(20, 16), opc = BITS(15, 11), Rn = BITS(9, 5), Rd = BITS(4, 0);
+
+    if (opc >= 0x18) { simd_three_same_fp(c, insn); return; }   /* FP three-same */
 
     if (opc == 0x03) {                         /* logical (size selects op) */
         u64 a0 = c->v[Rn].d[0], a1 = c->v[Rn].d[1];
@@ -511,10 +690,33 @@ static void simd_three_same(CPU *c, u32 insn) {
  * index is built from H:L:M with a size-dependent split (and .H restricts Vm to
  * V0-V15). Poly1305 (poly1305-armv8) leans on UMULL/UMLAL by element, so this
  * unblocks the ChaCha20-Poly1305 TLS suite. */
+/* AdvSIMD vector x indexed element, floating-point: FMLA(0x1)/FMLS(0x5)/
+ * FMUL(0x9,U=0)/FMULX(0x9,U=1). size=10 .4s/.2s (idx=H:L), size=11 .2d (idx=H). */
+static void simd_indexed_fp(CPU *c, u32 insn) {
+    unsigned Q = BIT(30), U = BIT(29), size = BITS(23, 22), opc = BITS(15, 12);
+    unsigned Rm = BITS(20, 16), Rn = BITS(9, 5), Rd = BITS(4, 0), H = BIT(11), L = BIT(21);
+    V128 vn = c->v[Rn], vm = c->v[Rm], vd = c->v[Rd], r; r.d[0] = r.d[1] = 0;
+    unsigned op = (opc == 0x1) ? FOP_MLA : (opc == 0x5) ? FOP_MLS : (U ? FOP_MULX : FOP_MUL);
+    if (size == 3) {                              /* .2d (idx = H, L must be 0) */
+        double e = vget_d(&vm, H);
+        unsigned n = Q ? 2 : 1;
+        for (unsigned i = 0; i < n; i++) vset_d(&r, i, fop_d(op, vget_d(&vn, i), e, vget_d(&vd, i)));
+        c->v[Rd] = r; return;
+    }
+    if (size == 2) {                              /* .4s/.2s (idx = H:L) */
+        float e = vget_s(&vm, (H << 1) | L);
+        unsigned n = Q ? 4 : 2;
+        for (unsigned i = 0; i < n; i++) vset_s(&r, i, fop_s(op, vget_s(&vn, i), e, vget_s(&vd, i)));
+        c->v[Rd] = r; return;
+    }
+    fpsimd_undef(c, insn);                        /* half-precision deferred */
+}
+
 static void simd_indexed(CPU *c, u32 insn) {
     unsigned Q = BIT(30), U = BIT(29), size = BITS(23, 22), opc = BITS(15, 12);
     unsigned Rn = BITS(9, 5), Rd = BITS(4, 0);
     unsigned L = BIT(21), H = BIT(11), M = BIT(20), Rm, index;
+    if (opc == 0x1 || opc == 0x5 || opc == 0x9) { simd_indexed_fp(c, insn); return; }  /* FP by-element */
     if (size == 1)      { Rm = BITS(19, 16); index = (H << 2) | (L << 1) | M; }  /* .H src */
     else if (size == 2) { Rm = BITS(20, 16); index = (H << 1) | L; }             /* .S src */
     else { fpsimd_undef(c, insn); return; }   /* .B/.D have no integer by-element */
@@ -575,6 +777,18 @@ static void simd_three_diff(CPU *c, u32 insn) {
 static void simd_across(CPU *c, u32 insn) {
     unsigned Q = BIT(30), U = BIT(29), size = BITS(23, 22);
     unsigned opc = BITS(16, 12), Rn = BITS(9, 5), Rd = BITS(4, 0);
+
+    /* FP across (.4s): FMAXNMV/FMINNMV (opc 0x0c), FMAXV/FMINV (opc 0x0f);
+     * bit23=a selects min. Result is a scalar in s0. */
+    if (U == 1 && (opc == 0x0c || opc == 0x0f)) {
+        unsigned a = BIT(23);
+        unsigned fop = (opc == 0x0f) ? (a ? FOP_MIN : FOP_MAX) : (a ? FOP_MINNM : FOP_MAXNM);
+        float acc = vget_s(&c->v[Rn], 0);
+        for (unsigned i = 1; i < 4; i++) acc = fop_s(fop, acc, vget_s(&c->v[Rn], i), 0);
+        V128 r; r.d[0] = r.d[1] = 0; vset_s(&r, 0, acc); c->v[Rd] = r;
+        return;
+    }
+
     unsigned esize = 8u << size, n = (Q ? 16 : 8) >> size;
     u64 emask = (esize == 64) ? ~0ULL : ((1ULL << esize) - 1);
     u64 acc = velem_get(&c->v[Rn], size, 0);
@@ -593,11 +807,211 @@ static void simd_across(CPU *c, u32 insn) {
     c->v[Rd].d[0] = acc & emask; c->v[Rd].d[1] = 0;
 }
 
+/* FP -> integer lane convert with saturation (shared clamp logic). x64 selects
+ * 64-bit (.2d) vs 32-bit (.4s) result width; is_signed picks the signed form. */
+static u64 fcvt_to_int(double r, int is_signed, int x64) {
+    if (is_signed) {
+        if (x64) { s64 m = (r >= 9223372036854775807.0) ? INT64_MAX : (r <= -9223372036854775808.0) ? INT64_MIN : (s64)r; return (u64)m; }
+        s32 m = (r >= 2147483647.0) ? INT32_MAX : (r <= -2147483648.0) ? INT32_MIN : (s32)r; return (u64)(u32)m;
+    }
+    if (r < 0) r = 0;
+    if (x64) { u64 m = (r >= 18446744073709551615.0) ? UINT64_MAX : (u64)r; return m; }
+    u32 m = (r >= 4294967295.0) ? UINT32_MAX : (u32)r; return m;
+}
+/* Round to nearest, ties to even (the f_round helper rounds ties away). Built
+ * from f_trunc to avoid a libm dependency (see the FP_INTEGRAL helpers above). */
+static double f_round_even(double v) {
+    if (!(__builtin_fabs(v) < FP_INTEGRAL)) return v;   /* integral / nan / inf */
+    double t = f_trunc(v), d = v - t;                   /* d: fractional, signed */
+    if (d > 0.5) t += 1.0;
+    else if (d < -0.5) t -= 1.0;
+    else if (d == 0.5 || d == -0.5) {                   /* tie -> round to even */
+        double half = t / 2.0;
+        if (f_trunc(half) != half) t += (v > 0) ? 1.0 : -1.0;
+    }
+    return t;
+}
+/* Round a double per AdvSIMD FCVT/FRINT mode: 0=N(even) 1=P 2=M 3=Z 4=A(away).
+ * A zero result takes the sign of the operand (ARM FRINT/FCVT semantics). */
+static double fround_mode(double v, int rmode) {
+    double res;
+    switch (rmode) {
+        case 0:  res = f_round_even(v); break;   /* nearest, ties to even */
+        case 1:  res = f_ceil(v);       break;   /* +inf */
+        case 2:  res = f_floor(v);      break;   /* -inf */
+        case 3:  res = f_trunc(v);      break;   /* zero */
+        default: res = f_round(v);      break;   /* nearest, ties away */
+    }
+    if (res == 0.0 && __builtin_signbit(v)) res = -0.0;
+    return res;
+}
+
+/* ---- FRECPE / FRSQRTE reciprocal estimates (exact ARM algorithm) ----------
+ * Transcribed from QEMU target/arm/vfp_helper.c so the 8-bit-mantissa estimate
+ * matches bit-for-bit (Newton-Raphson refinement via FRECPS/FRSQRTS depends on
+ * the precise starting value). Pure-integer; assumes default rounding and
+ * FPCR.FZ=0 (the qemu-aarch64 user default we validate against). */
+static u64 bf_extract(u64 v, unsigned start, unsigned len) {
+    return (v >> start) & (len >= 64 ? ~0ULL : ((1ULL << len) - 1));
+}
+static u64 bf_deposit(u64 v, unsigned start, unsigned len, u64 field) {
+    u64 m = (len >= 64 ? ~0ULL : ((1ULL << len) - 1)) << start;
+    return (v & ~m) | ((field << start) & m);
+}
+static int recip_estimate(int input) {        /* input,result in [256,512) */
+    int a = (input * 2) + 1, b = (1 << 19) / a;
+    return (b + 1) >> 1;
+}
+static int recip_sqrt_estimate(int input) {    /* input in [128,512) */
+    int a, b, r;
+    if (input < 256) a = input * 2 + 1;
+    else { a = (input >> 1) << 1; a = (a + 1) * 2; }
+    b = 512;
+    while (a * (b + 1) * (b + 1) < (1 << 28)) b += 1;
+    r = (b + 1) >> 1;
+    return r;
+}
+static u64 call_recip_estimate(int *exp, int exp_off, u64 frac) {
+    u32 scaled, estimate; u64 result_frac; int result_exp;
+    if (*exp == 0) {
+        if (bf_extract(frac, 63, 1) == 0) { *exp = -1; frac <<= 2; }
+        else frac <<= 1;
+    }
+    scaled = (u32)bf_deposit(1 << 8, 0, 8, bf_extract(frac, 44, 8));
+    estimate = recip_estimate(scaled);
+    result_exp = exp_off - *exp;
+    result_frac = bf_deposit(0, 44, 8, estimate);
+    if (result_exp == 0)       result_frac = bf_deposit(result_frac >> 1, 51, 1, 1);
+    else if (result_exp == -1) { result_frac = bf_deposit(result_frac >> 2, 50, 2, 1); result_exp = 0; }
+    *exp = result_exp;
+    return result_frac;
+}
+static u64 call_recip_sqrt_estimate(int *exp, int exp_off, u64 frac) {
+    int estimate; u32 scaled;
+    if (*exp == 0) {
+        while (bf_extract(frac, 62, 1) == 0) { frac <<= 1; *exp -= 1; }
+        frac = bf_extract(frac, 0, 62) << 1;
+    }
+    if (*exp & 1) scaled = (u32)bf_deposit(1 << 7, 0, 7, bf_extract(frac, 45, 7));
+    else          scaled = (u32)bf_deposit(1 << 8, 0, 8, bf_extract(frac, 44, 8));
+    estimate = recip_sqrt_estimate(scaled);
+    *exp = (exp_off - *exp) / 2;
+    return (u64)estimate << 44;
+}
+static u32 recpe_f32(u32 v) {
+    u32 sbit = v & 0x80000000u, frac = v & 0x7fffff; int exp = (v >> 23) & 0xff;
+    if (exp == 0xff) return frac ? 0x7fc00000u : sbit;             /* nan / inf->0 */
+    if (exp == 0 && frac == 0) return sbit | 0x7f800000u;          /* 0 -> inf */
+    if ((v & 0x7fffffff) < (1u << 21)) return sbit | 0x7f800000u;  /* |x|<2^-128 -> inf */
+    u64 f = call_recip_estimate(&exp, 253, ((u64)frac) << 29);
+    return sbit | ((u32)(exp & 0xff) << 23) | (u32)((f >> 29) & 0x7fffff);
+}
+static u32 rsqrte_f32(u32 v) {
+    u32 sbit = v & 0x80000000u, frac = v & 0x7fffff; int exp = (v >> 23) & 0xff;
+    if (exp == 0xff && frac) return 0x7fc00000u;                   /* nan */
+    if (exp == 0 && frac == 0) return sbit | 0x7f800000u;          /* 0 -> inf */
+    if (sbit) return 0x7fc00000u;                                  /* negative -> nan */
+    if (exp == 0xff) return 0;                                     /* +inf -> 0 */
+    u64 f = call_recip_sqrt_estimate(&exp, 380, ((u64)frac) << 29);
+    return sbit | (((u32)exp << 23) & 0x7f800000u) | (u32)((f >> 29) & 0x7fffff);
+}
+static u64 recpe_f64(u64 v) {
+    u64 sbit = v & 0x8000000000000000ULL, frac = v & 0xfffffffffffffULL;
+    int exp = (v >> 52) & 0x7ff;
+    if (exp == 0x7ff) return frac ? 0x7ff8000000000000ULL : sbit;
+    if (exp == 0 && frac == 0) return sbit | 0x7ff0000000000000ULL;
+    if ((v & 0x7fffffffffffffffULL) < (1ULL << 50)) return sbit | 0x7ff0000000000000ULL;
+    u64 f = call_recip_estimate(&exp, 2045, frac);   /* 52-bit frac: MSB already at bit 51 */
+    return sbit | ((u64)(exp & 0x7ff) << 52) | f;
+}
+static u64 rsqrte_f64(u64 v) {
+    u64 sbit = v & 0x8000000000000000ULL, frac = v & 0xfffffffffffffULL;
+    int exp = (v >> 52) & 0x7ff;
+    if (exp == 0x7ff && frac) return 0x7ff8000000000000ULL;
+    if (exp == 0 && frac == 0) return sbit | 0x7ff0000000000000ULL;
+    if (sbit) return 0x7ff8000000000000ULL;
+    if (exp == 0x7ff) return 0;
+    u64 f = call_recip_sqrt_estimate(&exp, 3068, frac);   /* 52-bit frac: MSB at bit 51 */
+    return sbit | (((u64)exp << 52) & 0x7ff0000000000000ULL) | (f & 0xfffffffffffffULL);
+}
+
+/* AdvSIMD two-register misc, floating-point page: FABS/FNEG/FSQRT, FRINTx,
+ * FCVT{N,M,P,Z,A}{S,U}, SCVTF/UCVTF, FCMxx #0.0, FCVTL/FCVTN/FCVTXN. hsz=bit23
+ * selects the opcode page, sz=bit22 the precision (half-precision deferred). */
+static void simd_two_misc_fp(CPU *c, u32 insn) {
+    unsigned Q = BIT(30), U = BIT(29), hsz = BIT(23), sz = BIT(22), opc = BITS(16, 12);
+    unsigned Rn = BITS(9, 5), Rd = BITS(4, 0);
+    V128 vn = c->v[Rn], r; r.d[0] = r.d[1] = 0;
+
+    /* Lane-size-changing converts (half-precision variants deferred to UNDEF). */
+    if (opc == 0x17 && U == 0) {                 /* FCVTL: .2s -> .2d */
+        if (sz == 0) { fpsimd_undef(c, insn); return; }
+        unsigned base = Q ? 2 : 0;
+        vset_d(&r, 0, (double)vget_s(&vn, base));
+        vset_d(&r, 1, (double)vget_s(&vn, base + 1));
+        c->v[Rd] = r; return;
+    }
+    if (opc == 0x16) {                           /* FCVTN (U=0) / FCVTXN (U=1): .2d -> .2s */
+        if (sz == 0) { fpsimd_undef(c, insn); return; }
+        V128 res; if (Q) res = c->v[Rd]; else { res.d[0] = res.d[1] = 0; }
+        unsigned base = Q ? 2 : 0;
+        vset_s(&res, base,     (float)vget_d(&vn, 0));
+        vset_s(&res, base + 1, (float)vget_d(&vn, 1));
+        c->v[Rd] = res; return;
+    }
+
+    unsigned key = (U << 6) | (hsz << 5) | opc;
+    int dbl = sz, x64 = sz;
+    unsigned n = dbl ? (Q ? 2 : 1) : (Q ? 4 : 2);
+    for (unsigned i = 0; i < n; i++) {
+        double x = dbl ? vget_d(&vn, i) : (double)vget_s(&vn, i);
+        u64 ires; int is_int = 0, is_mask = 0; double res = 0; u64 mask = 0;
+        switch (key) {
+            case 0x2f: res = __builtin_fabs(x); break;                 /* FABS  */
+            case 0x6f: res = -x; break;                                /* FNEG  */
+            case 0x7f: res = dbl ? __builtin_sqrt(x) : (double)__builtin_sqrtf((float)x); break; /* FSQRT */
+            case 0x18: res = fround_mode(x, 0); break;                 /* FRINTN */
+            case 0x38: res = fround_mode(x, 1); break;                 /* FRINTP */
+            case 0x58: res = fround_mode(x, 4); break;                 /* FRINTA */
+            case 0x19: res = fround_mode(x, 2); break;                 /* FRINTM */
+            case 0x39: res = fround_mode(x, 3); break;                 /* FRINTZ */
+            case 0x59: case 0x79: res = fround_mode(x, 0); break;      /* FRINTX/FRINTI */
+            case 0x1d: res = x; if (dbl) res = (double)(s64)vn.d[i]; else res = (double)(s32)vn.s[i]; break; /* SCVTF */
+            case 0x5d: if (dbl) res = (double)(u64)vn.d[i]; else res = (double)(u32)vn.s[i]; break;          /* UCVTF */
+            case 0x1a: case 0x3a: case 0x1b: case 0x3b: case 0x1c:     /* FCVT*S (signed) */
+            case 0x5a: case 0x7a: case 0x5b: case 0x7b: case 0x5c: {   /* FCVT*U (unsigned) */
+                int rmode = (opc == 0x1a) ? (hsz ? 1 : 0) : (opc == 0x1b) ? (hsz ? 3 : 2) : 4;
+                ires = fcvt_to_int(fround_mode(x, rmode), U == 0, x64); is_int = 1; break;
+            }
+            case 0x2c: mask = (x >  0.0) ? ~0ULL : 0; is_mask = 1; break;  /* FCMGT #0 */
+            case 0x6c: mask = (x >= 0.0) ? ~0ULL : 0; is_mask = 1; break;  /* FCMGE #0 */
+            case 0x2d: mask = (x == 0.0) ? ~0ULL : 0; is_mask = 1; break;  /* FCMEQ #0 */
+            case 0x6d: mask = (x <= 0.0) ? ~0ULL : 0; is_mask = 1; break;  /* FCMLE #0 */
+            case 0x2e: mask = (x <  0.0) ? ~0ULL : 0; is_mask = 1; break;  /* FCMLT #0 */
+            case 0x3d:  /* FRECPE  */
+                if (dbl) r.d[i] = recpe_f64(vn.d[i]); else r.s[i] = recpe_f32(vn.s[i]);
+                continue;
+            case 0x7d:  /* FRSQRTE */
+                if (dbl) r.d[i] = rsqrte_f64(vn.d[i]); else r.s[i] = rsqrte_f32(vn.s[i]);
+                continue;
+            default: fpsimd_undef(c, insn); return;
+        }
+        if (is_int)       { if (dbl) r.d[i] = ires; else r.s[i] = (u32)ires; }
+        else if (is_mask) { if (dbl) r.d[i] = mask; else r.s[i] = (u32)mask; }
+        else              { if (dbl) vset_d(&r, i, res); else vset_s(&r, i, (float)res); }
+    }
+    c->v[Rd] = r;
+}
+
 /* AdvSIMD two-register misc: per-element unary ops (NOT, NEG, compare-with-zero,
  * ABS, etc.) plus the common element reductions. */
 static void simd_two_misc(CPU *c, u32 insn) {
     unsigned Q = BIT(30), U = BIT(29), size = BITS(23, 22);
     unsigned opc = BITS(16, 12), Rn = BITS(9, 5), Rd = BITS(4, 0);
+
+    /* Floating-point page (FABS/FNEG/FCMxx#0, FCVT/FRINT family, FSQRT, SCVTF).
+     * opcodes 0x0c-0x0f and 0x16-0x1f are exclusively FP here. */
+    if ((opc >= 0x0c && opc <= 0x0f) || opc >= 0x16) { simd_two_misc_fp(c, insn); return; }
 
     if (opc == 0x05 && U == 1 && size == 0) {  /* NOT (bitwise, byte) */
         c->v[Rd].d[0] = ~c->v[Rn].d[0]; c->v[Rd].d[1] = Q ? ~c->v[Rn].d[1] : 0; return;
