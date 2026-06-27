@@ -1309,13 +1309,55 @@ static void simd_shift_imm(CPU *c, u32 insn) {
         return;
     }
 
-    if (opc == 0x10 && U == 0 && (immh & 8) == 0) {   /* SHRN/SHRN2 (narrowing >>) */
+    /* Narrowing right shifts (source 2*esize -> dest esize):
+     * 0x10 SHRN/SQSHRUN, 0x11 RSHRN/SQRSHRUN, 0x12 SQSHRN/UQSHRN, 0x13 SQRSHRN/UQRSHRN. */
+    if (opc >= 0x10 && opc <= 0x13) {
+        if (immh & 8) { fpsimd_undef(c, insn); return; }   /* reserved (no 128-bit dest) */
         unsigned shift = 2 * esize - immhb, nd = 64 / esize, base = Q ? nd : 0;
+        int round = (opc == 0x11 || opc == 0x13);
+        int nonsat = ((opc == 0x10 || opc == 0x11) && U == 0);          /* SHRN/RSHRN */
+        int signed_src = nonsat ? 0 : ((opc == 0x10 || opc == 0x11) ? 1 : (U == 0));
+        int sat_unsigned = (opc == 0x10 || opc == 0x11) ? 1 : (U == 1);
+        u64 emask = (1ULL << esize) - 1;
+        u64 smask = (2 * esize >= 64) ? ~0ULL : ((1ULL << (2 * esize)) - 1);
         V128 r; if (Q) r = c->v[Rd]; else { r.d[0] = r.d[1] = 0; }
-        for (unsigned i = 0; i < nd; i++)
-            velem_set(&r, size, base + i, velem_get(&c->v[Rn], size + 1, i) >> shift);
-        c->v[Rd] = r;
-        return;
+        for (unsigned i = 0; i < nd; i++) {
+            u64 src = velem_get(&c->v[Rn], size + 1, i) & smask;
+            u64 nv;
+            if (nonsat) {
+                __int128 val = (__int128)src;
+                if (round) val += ((__int128)1 << (shift - 1));
+                nv = (u64)((unsigned __int128)val >> shift) & emask;     /* truncating narrow */
+            } else {
+                __int128 val = signed_src ? (__int128)sx(src, 2 * esize) : (__int128)src;
+                if (round) val += ((__int128)1 << (shift - 1));
+                val >>= shift;
+                if (sat_unsigned) nv = (val < 0) ? 0 : ((val > (__int128)emask) ? emask : (u64)val);
+                else              nv = sat_s128(val, esize);
+            }
+            velem_set(&r, size, base + i, nv & emask);
+        }
+        c->v[Rd] = r; return;
+    }
+
+    /* Fixed-point convert: SCVTF/UCVTF (0x1c), FCVTZS/FCVTZU (0x1f). */
+    if (opc == 0x1c || opc == 0x1f) {
+        if (size != 2 && size != 3) { fpsimd_undef(c, insn); return; }   /* 16-bit = FP16 */
+        unsigned fbits = 2 * esize - immhb, n = (Q ? 16 : 8) >> size;
+        int dbl = (size == 3);
+        u64 pb = (u64)(fbits + 1023) << 52; double pw; memcpy(&pw, &pb, 8);  /* 2^fbits */
+        V128 r; r.d[0] = r.d[1] = 0;
+        for (unsigned i = 0; i < n; i++) {
+            if (opc == 0x1c) {                            /* fixed -> FP */
+                if (dbl) vset_d(&r, i, (U ? (double)(u64)c->v[Rn].d[i] : (double)(s64)c->v[Rn].d[i]) / pw);
+                else     vset_s(&r, i, (U ? (float)(u32)c->v[Rn].s[i] : (float)(s32)c->v[Rn].s[i]) / (float)pw);
+            } else {                                      /* FP -> fixed (trunc, saturating) */
+                double x = (dbl ? vget_d(&c->v[Rn], i) : (double)vget_s(&c->v[Rn], i)) * pw;
+                u64 iv = fcvt_to_int(f_trunc(x), U == 0, dbl);
+                if (dbl) r.d[i] = iv; else r.s[i] = (u32)iv;
+            }
+        }
+        c->v[Rd] = r; return;
     }
 
     unsigned n = (Q ? 16 : 8) >> size;
@@ -1337,6 +1379,19 @@ static void simd_shift_imm(CPU *c, u32 insn) {
                 v = ((a & emask) >> sh) | (velem_get(&c->v[Rd], size, i) & ~(emask >> sh));
                 break;
             }
+            /* shift-right (+accumulate, rounding) — via the __int128 register-shift kernel */
+            case (0 << 5) | 0x02: v = velem_get(&c->v[Rd],size,i) + vreg_shift(a, -(int)(2*esize-immhb), esize, 1, 0, 0); break; /* SSRA */
+            case (1 << 5) | 0x02: v = velem_get(&c->v[Rd],size,i) + vreg_shift(a, -(int)(2*esize-immhb), esize, 0, 0, 0); break; /* USRA */
+            case (0 << 5) | 0x04: v = vreg_shift(a, -(int)(2*esize-immhb), esize, 1, 1, 0); break;  /* SRSHR */
+            case (1 << 5) | 0x04: v = vreg_shift(a, -(int)(2*esize-immhb), esize, 0, 1, 0); break;  /* URSHR */
+            case (0 << 5) | 0x06: v = velem_get(&c->v[Rd],size,i) + vreg_shift(a, -(int)(2*esize-immhb), esize, 1, 1, 0); break; /* SRSRA */
+            case (1 << 5) | 0x06: v = velem_get(&c->v[Rd],size,i) + vreg_shift(a, -(int)(2*esize-immhb), esize, 0, 1, 0); break; /* URSRA */
+            /* saturating left shift by immediate */
+            case (0 << 5) | 0x0e: v = vreg_shift(a, (int)(immhb-esize), esize, 1, 0, 1); break;     /* SQSHL  */
+            case (1 << 5) | 0x0e: v = vreg_shift(a, (int)(immhb-esize), esize, 0, 0, 1); break;     /* UQSHL  */
+            case (1 << 5) | 0x0c: { int sh = (int)(immhb-esize);             /* SQSHLU (signed->unsigned) */
+                __int128 w = (__int128)sx(a,esize) << sh;
+                v = (w < 0) ? 0 : ((w > (__int128)emask) ? emask : (u64)w); } break;
             default: fpsimd_undef(c, insn); return;
         }
         velem_set(&r, size, i, v & emask);
@@ -1353,12 +1408,21 @@ static void simd_scalar_shift(CPU *c, u32 insn) {
     unsigned immhb = (immh << 3) | immb;
     if (!(immh & 8)) { fpsimd_undef(c, insn); return; }   /* scalar SHL/SHR are 64-bit */
     u64 a = c->v[Rn].d[0], v;
+    int rsh = -(int)(128 - immhb);                                          /* right-shift amount */
     switch ((U << 5) | opc) {
         case (0 << 5) | 0x0a: v = a << (immhb - 64); break;                 /* SHL  */
         case (0 << 5) | 0x00: { unsigned sh = 128 - immhb;                  /* SSHR */
             v = (u64)((s64)a >> (sh >= 64 ? 63 : sh)); } break;
         case (1 << 5) | 0x00: { unsigned sh = 128 - immhb;                  /* USHR */
             v = (sh >= 64) ? 0 : (a >> sh); } break;
+        case (0 << 5) | 0x02: v = c->v[Rd].d[0] + vreg_shift(a, rsh, 64, 1, 0, 0); break; /* SSRA  */
+        case (1 << 5) | 0x02: v = c->v[Rd].d[0] + vreg_shift(a, rsh, 64, 0, 0, 0); break; /* USRA  */
+        case (0 << 5) | 0x04: v = vreg_shift(a, rsh, 64, 1, 1, 0); break;   /* SRSHR */
+        case (1 << 5) | 0x04: v = vreg_shift(a, rsh, 64, 0, 1, 0); break;   /* URSHR */
+        case (0 << 5) | 0x06: v = c->v[Rd].d[0] + vreg_shift(a, rsh, 64, 1, 1, 0); break; /* SRSRA */
+        case (1 << 5) | 0x06: v = c->v[Rd].d[0] + vreg_shift(a, rsh, 64, 0, 1, 0); break; /* URSRA */
+        case (0 << 5) | 0x0e: v = vreg_shift(a, (int)(immhb - 64), 64, 1, 0, 1); break;    /* SQSHL  */
+        case (1 << 5) | 0x0e: v = vreg_shift(a, (int)(immhb - 64), 64, 0, 0, 1); break;    /* UQSHL  */
         default: fpsimd_undef(c, insn); return;
     }
     c->v[Rd].d[0] = v; c->v[Rd].d[1] = 0;

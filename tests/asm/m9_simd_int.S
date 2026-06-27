@@ -639,6 +639,242 @@ _start:
 	CKX x0, 0xff00010080007f00, 84
 	umov x0, v0.d[1]
 	CKX x0, 0x90001000c0004000, 1084
+	/* ssra  v0.8h, v1.8h, #3 */
+	adr x10, D8h
+	ld1 {v0.16b}, [x10]
+	adr x10, V8h
+	ld1 {v1.16b}, [x10]
+	ssra  v0.8h, v1.8h, #3
+	umov x0, v0.d[0]
+	CKX x0, 0xf040102f003f0010, 90
+	umov x0, v0.d[1]
+	CKX x0, 0x02c60078005f0052, 1090
+	/* usra  v0.8h, v1.8h, #3 */
+	adr x10, D8h
+	ld1 {v0.16b}, [x10]
+	adr x10, V8h
+	ld1 {v1.16b}, [x10]
+	usra  v0.8h, v1.8h, #3
+	umov x0, v0.d[0]
+	CKX x0, 0x1040102f003f0010, 91
+	umov x0, v0.d[1]
+	CKX x0, 0x02c60078205f0052, 1091
+	/* srshr v0.8h, v1.8h, #3 */
+	adr x10, V8h
+	ld1 {v1.16b}, [x10]
+	srshr v0.8h, v1.8h, #3
+	umov x0, v0.d[0]
+	CKX x0, 0xf000100000200000, 92
+	umov x0, v0.d[1]
+	CKX x0, 0x0247000800000002, 1092
+	/* urshr v0.8h, v1.8h, #3 */
+	adr x10, V8h
+	ld1 {v1.16b}, [x10]
+	urshr v0.8h, v1.8h, #3
+	umov x0, v0.d[0]
+	CKX x0, 0x1000100000200000, 93
+	umov x0, v0.d[1]
+	CKX x0, 0x0247000820000002, 1093
+	/* srsra v0.8h, v1.8h, #3 */
+	adr x10, D8h
+	ld1 {v0.16b}, [x10]
+	adr x10, V8h
+	ld1 {v1.16b}, [x10]
+	srsra v0.8h, v1.8h, #3
+	umov x0, v0.d[0]
+	CKX x0, 0xf040103000400010, 94
+	umov x0, v0.d[1]
+	CKX x0, 0x02c7007800600052, 1094
+	/* ursra v0.8h, v1.8h, #3 */
+	adr x10, D8h
+	ld1 {v0.16b}, [x10]
+	adr x10, V8h
+	ld1 {v1.16b}, [x10]
+	ursra v0.8h, v1.8h, #3
+	umov x0, v0.d[0]
+	CKX x0, 0x1040103000400010, 95
+	umov x0, v0.d[1]
+	CKX x0, 0x02c7007820600052, 1095
+	/* sqshl  v0.8h, v1.8h, #4 */
+	adr x10, V8h
+	ld1 {v1.16b}, [x10]
+	sqshl  v0.8h, v1.8h, #4
+	umov x0, v0.d[0]
+	CKX x0, 0x80007fff0ff00010, 96
+	umov x0, v0.d[1]
+	CKX x0, 0x7fff0400fff00100, 1096
+	/* uqshl  v0.8h, v1.8h, #4 */
+	adr x10, V8h
+	ld1 {v1.16b}, [x10]
+	uqshl  v0.8h, v1.8h, #4
+	umov x0, v0.d[0]
+	CKX x0, 0xffffffff0ff00010, 97
+	umov x0, v0.d[1]
+	CKX x0, 0xffff0400ffff0100, 1097
+	/* sqshlu v0.8h, v1.8h, #4 */
+	adr x10, V8h
+	ld1 {v1.16b}, [x10]
+	sqshlu v0.8h, v1.8h, #4
+	umov x0, v0.d[0]
+	CKX x0, 0x0000ffff0ff00010, 98
+	umov x0, v0.d[1]
+	CKX x0, 0xffff040000000100, 1098
+	/* shrn    v0.4h, v1.4s, #5 */
+	adr x10, A4s
+	ld1 {v1.16b}, [x10]
+	shrn    v0.4h, v1.4s, #5
+	umov x0, v0.d[0]
+	CKX x0, 0xffff00000000ffff, 99
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1099
+	/* rshrn   v0.4h, v1.4s, #5 */
+	adr x10, A4s
+	ld1 {v1.16b}, [x10]
+	rshrn   v0.4h, v1.4s, #5
+	umov x0, v0.d[0]
+	CKX x0, 0x0000000000000000, 100
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1100
+	/* sqshrn   v0.8b, v1.8h, #3 */
+	adr x10, A8h
+	ld1 {v1.16b}, [x10]
+	sqshrn   v0.8b, v1.8h, #3
+	umov x0, v0.d[0]
+	CKX x0, 0x7f20807fff00807f, 101
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1101
+	/* uqshrn   v0.8b, v1.8h, #3 */
+	adr x10, A8h
+	ld1 {v1.16b}, [x10]
+	uqshrn   v0.8b, v1.8h, #3
+	umov x0, v0.d[0]
+	CKX x0, 0xff20ffffff00ffff, 102
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1102
+	/* sqrshrn  v0.8b, v1.8h, #3 */
+	adr x10, A8h
+	ld1 {v1.16b}, [x10]
+	sqrshrn  v0.8b, v1.8h, #3
+	umov x0, v0.d[0]
+	CKX x0, 0x7f20807f0000807f, 103
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1103
+	/* uqrshrn  v0.8b, v1.8h, #3 */
+	adr x10, A8h
+	ld1 {v1.16b}, [x10]
+	uqrshrn  v0.8b, v1.8h, #3
+	umov x0, v0.d[0]
+	CKX x0, 0xff20ffffff00ffff, 104
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1104
+	/* sqshrun  v0.8b, v1.8h, #3 */
+	adr x10, A8h
+	ld1 {v1.16b}, [x10]
+	sqshrun  v0.8b, v1.8h, #3
+	umov x0, v0.d[0]
+	CKX x0, 0xff2000ff000000ff, 105
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1105
+	/* sqrshrun v0.8b, v1.8h, #3 */
+	adr x10, A8h
+	ld1 {v1.16b}, [x10]
+	sqrshrun v0.8b, v1.8h, #3
+	umov x0, v0.d[0]
+	CKX x0, 0xff2000ff000000ff, 106
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1106
+	/* scvtf  v0.4s, v1.4s, #4 */
+	adr x10, A4s
+	ld1 {v1.16b}, [x10]
+	scvtf  v0.4s, v1.4s, #4
+	umov x0, v0.d[0]
+	CKX x0, 0xcd0000004d000000, 107
+	umov x0, v0.d[1]
+	CKX x0, 0xbd8000003d800000, 1107
+	/* ucvtf  v0.4s, v1.4s, #4 */
+	adr x10, A4s
+	ld1 {v1.16b}, [x10]
+	ucvtf  v0.4s, v1.4s, #4
+	umov x0, v0.d[0]
+	CKX x0, 0x4d0000004d000000, 108
+	umov x0, v0.d[1]
+	CKX x0, 0x4d8000003d800000, 1108
+	/* fcvtzs v0.4s, v1.4s, #4 */
+	adr x10, F4s
+	ld1 {v1.16b}, [x10]
+	fcvtzs v0.4s, v1.4s, #4
+	umov x0, v0.d[0]
+	CKX x0, 0xffffffdc00000018, 109
+	umov x0, v0.d[1]
+	CKX x0, 0xfffffff4000000a8, 1109
+	/* fcvtzu v0.4s, v1.4s, #4 */
+	adr x10, F4s
+	ld1 {v1.16b}, [x10]
+	fcvtzu v0.4s, v1.4s, #4
+	umov x0, v0.d[0]
+	CKX x0, 0x0000000000000018, 110
+	umov x0, v0.d[1]
+	CKX x0, 0x00000000000000a8, 1110
+	/* scvtf  v0.2d, v1.2d, #8 */
+	adr x10, A4s
+	ld1 {v1.16b}, [x10]
+	scvtf  v0.2d, v1.2d, #8
+	umov x0, v0.d[0]
+	CKX x0, 0xc35fffffffe00000, 111
+	umov x0, v0.d[1]
+	CKX x0, 0xc16fffffffe00000, 1111
+	/* fcvtzs v0.2d, v1.2d, #8 */
+	adr x10, F2d
+	ld1 {v1.16b}, [x10]
+	fcvtzs v0.2d, v1.2d, #8
+	umov x0, v0.d[0]
+	CKX x0, 0x0000000000000340, 112
+	umov x0, v0.d[1]
+	CKX x0, 0xfffffffffffffe80, 1112
+	/* ssra  d0, d1, #3 */
+	adr x10, QD
+	ld1 {v0.16b}, [x10]
+	adr x10, Q2
+	ld1 {v1.16b}, [x10]
+	ssra  d0, d1, #3
+	umov x0, v0.d[0]
+	CKX x0, 0x02468acf1357abde, 113
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1113
+	/* srshr d0, d1, #3 */
+	adr x10, Q2
+	ld1 {v1.16b}, [x10]
+	srshr d0, d1, #3
+	umov x0, v0.d[0]
+	CKX x0, 0x02468acf13579bde, 114
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1114
+	/* srsra d0, d1, #3 */
+	adr x10, QD
+	ld1 {v0.16b}, [x10]
+	adr x10, Q2
+	ld1 {v1.16b}, [x10]
+	srsra d0, d1, #3
+	umov x0, v0.d[0]
+	CKX x0, 0x02468acf1357abde, 115
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1115
+	/* sqshl d0, d1, #4 */
+	adr x10, Q1
+	ld1 {v1.16b}, [x10]
+	sqshl d0, d1, #4
+	umov x0, v0.d[0]
+	CKX x0, 0x7fffffffffffffff, 116
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1116
+	/* uqshl d0, d1, #4 */
+	adr x10, Q2
+	ld1 {v1.16b}, [x10]
+	uqshl d0, d1, #4
+	umov x0, v0.d[0]
+	CKX x0, 0xffffffffffffffff, 117
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1117
 	movz x0, #0
 	b done
 fail:
@@ -657,3 +893,8 @@ B4s: .word 0x00000001, 0x00000001, 0x7fffffff, 0x00000005
 D4s: .word 0x00000010, 0x00000020, 0x00000030, 0x00000040
 A16b: .word 0xff01807f, 0x9010c040, 0x027ecc33, 0xee11aa55
 B16b: .word 0x807f0201, 0x1020c040, 0xfe035544, 0x44332211
+F4s: .word 0x3fc00000, 0xc0100000, 0x41280000, 0xbf400000
+F2d: .word 0x00000000, 0x400a0000, 0x00000000, 0xbff80000
+Q1: .word 0xffffffff, 0x7fffffff, 0x00000000, 0x00000000
+Q2: .word 0x9abcdef0, 0x12345678, 0x00000000, 0x00000000
+QD: .word 0x00001000, 0x00000000, 0x00000000, 0x00000000
