@@ -433,6 +433,72 @@ static void exec_fp_dp3(CPU *c, u32 insn) {
 /* Sign-extend an `esize`-bit element value to s64. */
 static s64 sx(u64 v, unsigned esize) { return (s64)sign_extend(v, esize); }
 
+/* ---- integer saturation + register-shift helpers (saturating/shift ops) ---- */
+static u64 sat_s(s64 v, unsigned e) {
+    s64 max = (e >= 64) ? INT64_MAX : (((s64)1 << (e - 1)) - 1);
+    s64 min = (e >= 64) ? INT64_MIN : (-((s64)1 << (e - 1)));
+    if (v > max) v = max; else if (v < min) v = min;
+    return (u64)v;
+}
+static u64 sat_u(s64 v, unsigned e) {
+    u64 max = (e >= 64) ? ~0ULL : (((u64)1 << e) - 1);
+    if (v < 0) return 0;
+    return ((u64)v > max) ? max : (u64)v;
+}
+static u64 ssat_add(s64 a, s64 b, unsigned e) {
+    if (e < 64) return sat_s(a + b, e);
+    s64 r = (s64)((u64)a + (u64)b);
+    if (((a ^ r) & (b ^ r)) < 0) return (a < 0) ? (u64)INT64_MIN : (u64)INT64_MAX;
+    return (u64)r;
+}
+static u64 ssat_sub(s64 a, s64 b, unsigned e) {
+    if (e < 64) return sat_s(a - b, e);
+    s64 r = (s64)((u64)a - (u64)b);
+    if (((a ^ b) & (a ^ r)) < 0) return (a < 0) ? (u64)INT64_MIN : (u64)INT64_MAX;
+    return (u64)r;
+}
+static u64 usat_add(u64 a, u64 b, unsigned e) {
+    u64 r = a + b;
+    if (e < 64) { u64 m = ((u64)1 << e) - 1; return (r > m) ? m : r; }
+    return (r < a) ? ~0ULL : r;
+}
+static u64 usat_sub(u64 a, u64 b, unsigned e) { (void)e; return (a < b) ? 0 : (a - b); }
+
+/* AdvSIMD register variable shift kernel (S/USHL, S/URSHL, S/UQSHL, S/UQRSHL).
+ * sh>=0 left, sh<0 right; round adds the rounding bias; sat clamps left-shift
+ * overflow. Uses __int128 so wide shifts and 64-bit elements don't overflow. */
+static u64 vreg_shift(u64 val, int sh, unsigned e, int sgn, int round, int sat) {
+    u64 emask = (e >= 64) ? ~0ULL : (((u64)1 << e) - 1);
+    if (sh >= 0) {                                  /* left shift */
+        if (!sat) return (sh >= 64) ? 0 : ((val << sh) & emask);
+        if (sgn) {
+            __int128 w = (__int128)sx(val, e) << (sh & 127);
+            s64 max = (e >= 64) ? INT64_MAX : (((s64)1 << (e - 1)) - 1);
+            s64 min = (e >= 64) ? INT64_MIN : (-((s64)1 << (e - 1)));
+            if (sh >= 127) w = (sx(val, e) > 0) ? (__int128)max + 1 : (sx(val, e) < 0) ? (__int128)min - 1 : 0;
+            if (w > max) return (u64)max; if (w < min) return (u64)min;
+            return (u64)(s64)w & emask;
+        } else {
+            unsigned __int128 w = (unsigned __int128)(val & emask) << (sh & 127);
+            u64 max = (e >= 64) ? ~0ULL : (((u64)1 << e) - 1);
+            if (sh >= 127) w = (val & emask) ? (unsigned __int128)max + 1 : 0;
+            return ((unsigned __int128)w > max) ? max : ((u64)w & emask);
+        }
+    }
+    int rs = -sh;                                   /* right shift */
+    if (sgn) {
+        __int128 sv = sx(val, e);
+        if (round && rs >= 1 && rs <= 127) sv += ((__int128)1 << (rs - 1));
+        sv = (rs >= 128) ? (sv < 0 ? -1 : 0) : (sv >> rs);
+        return (u64)(s64)sv & emask;
+    }
+    unsigned __int128 uv = (val & emask);
+    if (round && rs >= 1 && rs <= 127) uv += ((unsigned __int128)1 << (rs - 1));
+    uv = (rs >= 128) ? 0 : (uv >> rs);
+    return (u64)uv & emask;
+}
+static u16 pmull8(u8 a, u8 b);                      /* defined in the crypto section */
+
 /* ===================== Floating-point vector helpers =====================
  * Computed in host float/double. NaN-payload propagation, denormal flushing and
  * non-default rounding modes are NOT bit-exact to ARM (same caveat as the scalar
@@ -674,9 +740,38 @@ static void simd_three_same(CPU *c, u32 insn) {
             case (0 << 5) | 0x0d: v = (sx(a,esize) <  sx(b,esize)) ? a : b; break;     /* SMIN */
             case (1 << 5) | 0x0d: v = (a < b) ? a : b; break;            /* UMIN */
             case (0 << 5) | 0x13: v = a * b; break;                       /* MUL */
+            case (1 << 5) | 0x13: v = pmull8((u8)a, (u8)b) & 0xff; break; /* PMUL (.8b/.16b) */
             case (0 << 5) | 0x12: v = velem_get(&c->v[Rd], size, i) + a * b; break;    /* MLA */
             case (1 << 5) | 0x12: v = velem_get(&c->v[Rd], size, i) - a * b; break;    /* MLS */
-            case (0 << 5) | 0x01: v = a + b; break;                       /* (SQADD approx) */
+            /* halving / rounding-halving add & sub (esize<=32) */
+            case (0 << 5) | 0x00: v = (u64)((sx(a,esize) + sx(b,esize)) >> 1); break;          /* SHADD */
+            case (1 << 5) | 0x00: v = (a + b) >> 1; break;                                      /* UHADD */
+            case (0 << 5) | 0x02: v = (u64)((sx(a,esize) + sx(b,esize) + 1) >> 1); break;       /* SRHADD */
+            case (1 << 5) | 0x02: v = (a + b + 1) >> 1; break;                                  /* URHADD */
+            case (0 << 5) | 0x04: v = (u64)((sx(a,esize) - sx(b,esize)) >> 1); break;           /* SHSUB */
+            case (1 << 5) | 0x04: v = (u64)(((s64)(a & emask) - (s64)(b & emask)) >> 1); break; /* UHSUB */
+            /* saturating add/sub */
+            case (0 << 5) | 0x01: v = ssat_add(sx(a,esize), sx(b,esize), esize); break;  /* SQADD */
+            case (1 << 5) | 0x01: v = usat_add(a & emask, b & emask, esize); break;      /* UQADD */
+            case (0 << 5) | 0x05: v = ssat_sub(sx(a,esize), sx(b,esize), esize); break;  /* SQSUB */
+            case (1 << 5) | 0x05: v = usat_sub(a & emask, b & emask, esize); break;      /* UQSUB */
+            /* register variable shifts (shift = SInt(Vm element<7:0>)) */
+            case (0 << 5) | 0x08: v = vreg_shift(a, (s8)(b & 0xff), esize, 1, 0, 0); break;  /* SSHL */
+            case (1 << 5) | 0x08: v = vreg_shift(a, (s8)(b & 0xff), esize, 0, 0, 0); break;  /* USHL */
+            case (0 << 5) | 0x0a: v = vreg_shift(a, (s8)(b & 0xff), esize, 1, 1, 0); break;  /* SRSHL */
+            case (1 << 5) | 0x0a: v = vreg_shift(a, (s8)(b & 0xff), esize, 0, 1, 0); break;  /* URSHL */
+            case (0 << 5) | 0x09: v = vreg_shift(a, (s8)(b & 0xff), esize, 1, 0, 1); break;  /* SQSHL */
+            case (1 << 5) | 0x09: v = vreg_shift(a, (s8)(b & 0xff), esize, 0, 0, 1); break;  /* UQSHL */
+            case (0 << 5) | 0x0b: v = vreg_shift(a, (s8)(b & 0xff), esize, 1, 1, 1); break;  /* SQRSHL */
+            case (1 << 5) | 0x0b: v = vreg_shift(a, (s8)(b & 0xff), esize, 0, 1, 1); break;  /* UQRSHL */
+            /* absolute difference (+ accumulate) */
+            case (0 << 5) | 0x0e: { s64 d = sx(a,esize) - sx(b,esize); v = (u64)(d < 0 ? -d : d); } break; /* SABD */
+            case (1 << 5) | 0x0e: { u64 ua=a&emask, ub=b&emask; v = ua > ub ? ua-ub : ub-ua; } break;      /* UABD */
+            case (0 << 5) | 0x0f: { s64 d = sx(a,esize) - sx(b,esize); v = velem_get(&c->v[Rd],size,i) + (u64)(d<0?-d:d); } break; /* SABA */
+            case (1 << 5) | 0x0f: { u64 ua=a&emask, ub=b&emask; v = velem_get(&c->v[Rd],size,i) + (ua>ub?ua-ub:ub-ua); } break;    /* UABA */
+            /* saturating doubling multiply-high */
+            case (0 << 5) | 0x16: { s64 p = 2*sx(a,esize)*sx(b,esize); v = sat_s(p >> esize, esize); } break;                       /* SQDMULH */
+            case (1 << 5) | 0x16: { s64 p = 2*sx(a,esize)*sx(b,esize) + ((s64)1 << (esize-1)); v = sat_s(p >> esize, esize); } break; /* SQRDMULH */
             default: fpsimd_undef(c, insn); return;
         }
         velem_set(&r, size, i, v & emask);
