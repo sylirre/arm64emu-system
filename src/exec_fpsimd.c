@@ -1285,6 +1285,50 @@ static void simd_scalar_cvt(CPU *c, u32 insn) {
         c->v[Rd].d[0] = out; c->v[Rd].d[1] = 0;
         return;
     }
+
+    /* FP scalar misc: FRECPE/FRSQRTE (opcode 0x1d, hsz=1), FCMxx #0.0 (0x0c-0x0e). */
+    if (opcode == 0x1d && o2 == 1) {
+        V128 r; r.d[0] = r.d[1] = 0;
+        if (dbl) r.d[0] = U ? rsqrte_f64(c->v[Rn].d[0]) : recpe_f64(c->v[Rn].d[0]);
+        else     r.s[0] = U ? rsqrte_f32(c->v[Rn].s[0]) : recpe_f32(c->v[Rn].s[0]);
+        c->v[Rd] = r; return;
+    }
+    if (opcode >= 0x0c && opcode <= 0x0e) {
+        double x = dbl ? vget_d(&c->v[Rn], 0) : (double)vget_s(&c->v[Rn], 0);
+        int t = (opcode == 0x0c) ? (U ? x >= 0.0 : x > 0.0)
+              : (opcode == 0x0d) ? (U ? x <= 0.0 : x == 0.0) : (x < 0.0);
+        V128 r; r.d[0] = r.d[1] = 0;
+        if (dbl) r.d[0] = t ? ~0ULL : 0; else r.s[0] = t ? 0xffffffffu : 0;
+        c->v[Rd] = r; return;
+    }
+
+    /* Integer scalar two-misc (size = bits[23:22] selects element width). */
+    unsigned size = BITS(23, 22), esize = 8u << size;
+    u64 emask = (esize == 64) ? ~0ULL : ((1ULL << esize) - 1);
+    if (opcode == 0x14 || (opcode == 0x12 && U == 1)) {     /* SQXTN/UQXTN/SQXTUN */
+        u64 src = velem_get(&c->v[Rn], size + 1, 0), nv;
+        if (opcode == 0x12)  nv = sat_u(sx(src, 2*esize), esize);
+        else if (U == 0)     nv = sat_s(sx(src, 2*esize), esize);
+        else                 nv = (src > emask) ? emask : src;
+        V128 r; r.d[0] = r.d[1] = 0; velem_set(&r, size, 0, nv & emask); c->v[Rd] = r; return;
+    }
+    u64 a = velem_get(&c->v[Rn], size, 0), v; int ok = 1;
+    switch ((U << 5) | opcode) {
+        case (0 << 5) | 0x07: { s64 s = sx(a,esize); v = sat_s(s < 0 ? -s : s, esize); } break;  /* SQABS */
+        case (1 << 5) | 0x07: v = sat_s(-sx(a,esize), esize); break;                              /* SQNEG */
+        case (0 << 5) | 0x03: { u64 d = velem_get(&c->v[Rd],size,0); v = ssat_add(sx(d,esize), (s64)(a&emask), esize); } break; /* SUQADD */
+        case (1 << 5) | 0x03: { u64 d = velem_get(&c->v[Rd],size,0)&emask; s64 sa = sx(a,esize);  /* USQADD */
+            v = (sa >= 0) ? usat_add(d, (u64)sa, esize) : ((d < (u64)(-sa)) ? 0 : d - (u64)(-sa)); } break;
+        case (0 << 5) | 0x08: v = (sx(a,esize) >  0) ? emask : 0; break;   /* CMGT #0 */
+        case (1 << 5) | 0x08: v = (sx(a,esize) >= 0) ? emask : 0; break;   /* CMGE #0 */
+        case (0 << 5) | 0x09: v = (a == 0) ? emask : 0; break;             /* CMEQ #0 */
+        case (1 << 5) | 0x09: v = (sx(a,esize) <= 0) ? emask : 0; break;   /* CMLE #0 */
+        case (0 << 5) | 0x0a: v = (sx(a,esize) <  0) ? emask : 0; break;   /* CMLT #0 */
+        case (0 << 5) | 0x0b: { s64 s = sx(a,esize); v = (s < 0) ? (u64)(-s) : a; } break;        /* ABS */
+        case (1 << 5) | 0x0b: v = (u64)(-(s64)a); break;                   /* NEG */
+        default: ok = 0; v = 0; break;
+    }
+    if (ok) { V128 r; r.d[0] = r.d[1] = 0; velem_set(&r, size, 0, v & emask); c->v[Rd] = r; return; }
     fpsimd_undef(c, insn);
 }
 
@@ -1791,6 +1835,150 @@ static void simd_ext(CPU *c, u32 insn) {
     c->v[Rd] = r;
 }
 
+/* ===================== Scalar Advanced SIMD =====================
+ * The scalar forms reuse the vector kernels (fop_s/d, sat_*, vreg_shift, the
+ * estimates) operating on lane 0, with the rest of Vd zeroed. */
+static unsigned fp3_key_op(unsigned key) {       /* FP three-same arith op map (matches simd_three_same_fp) */
+    switch (key) {
+        case 0x18: case 0x58: return FOP_MAXNM;
+        case 0x38: case 0x78: return FOP_MINNM;
+        case 0x19: return FOP_MLA;   case 0x39: return FOP_MLS;
+        case 0x1a: case 0x5a: return FOP_ADD;    case 0x3a: return FOP_SUB;
+        case 0x1b: return FOP_MULX;  case 0x5b: return FOP_MUL;
+        case 0x1e: case 0x5e: return FOP_MAX;    case 0x3e: return FOP_MIN;
+        case 0x1f: return FOP_RECPS; case 0x3f: return FOP_RSQRTS;
+        case 0x5f: return FOP_DIV;   case 0x7a: return FOP_ABD;   case 0x7e: return FOP_MIN;
+        default: return FOP_ADD;
+    }
+}
+static int fp3_cmp_d(unsigned key, double x, double y) {
+    switch (key) {
+        case 0x1c: return x == y; case 0x5c: return x >= y; case 0x7c: return x > y;   /* FCMEQ/GE/GT */
+        case 0x5d: return __builtin_fabs(x) >= __builtin_fabs(y);                       /* FACGE */
+        case 0x7d: return __builtin_fabs(x) >  __builtin_fabs(y);                       /* FACGT */
+    }
+    return 0;
+}
+static int fp3_cmp_s(unsigned key, float x, float y) {
+    switch (key) {
+        case 0x1c: return x == y; case 0x5c: return x >= y; case 0x7c: return x > y;
+        case 0x5d: return __builtin_fabsf(x) >= __builtin_fabsf(y);
+        case 0x7d: return __builtin_fabsf(x) >  __builtin_fabsf(y);
+    }
+    return 0;
+}
+
+static void simd_scalar_three_same(CPU *c, u32 insn) {
+    unsigned U = BIT(29), opc = BITS(15, 11), Rm = BITS(20, 16), Rn = BITS(9, 5), Rd = BITS(4, 0);
+    V128 r; r.d[0] = r.d[1] = 0;
+    if (opc >= 0x18) {                               /* FP scalar three-same */
+        unsigned a = BIT(23), sz = BIT(22), key = (U << 6) | (a << 5) | opc;
+        int cmp = (opc == 0x1c || opc == 0x1d);
+        if (sz) {
+            double x = vget_d(&c->v[Rn], 0), y = vget_d(&c->v[Rm], 0);
+            if (cmp) r.d[0] = fp3_cmp_d(key, x, y) ? ~0ULL : 0;
+            else vset_d(&r, 0, fop_d(fp3_key_op(key), x, y, vget_d(&c->v[Rd], 0)));
+        } else {
+            float x = vget_s(&c->v[Rn], 0), y = vget_s(&c->v[Rm], 0);
+            if (cmp) r.s[0] = fp3_cmp_s(key, x, y) ? 0xffffffffu : 0;
+            else vset_s(&r, 0, fop_s(fp3_key_op(key), x, y, vget_s(&c->v[Rd], 0)));
+        }
+        c->v[Rd] = r; return;
+    }
+    unsigned size = BITS(23, 22), esize = 8u << size;
+    u64 emask = (esize == 64) ? ~0ULL : ((1ULL << esize) - 1);
+    u64 a = velem_get(&c->v[Rn], size, 0), b = velem_get(&c->v[Rm], size, 0), v;
+    switch ((U << 5) | opc) {
+        case (0 << 5) | 0x01: v = ssat_add(sx(a,esize), sx(b,esize), esize); break;   /* SQADD */
+        case (1 << 5) | 0x01: v = usat_add(a & emask, b & emask, esize); break;        /* UQADD */
+        case (0 << 5) | 0x05: v = ssat_sub(sx(a,esize), sx(b,esize), esize); break;   /* SQSUB */
+        case (1 << 5) | 0x05: v = usat_sub(a & emask, b & emask, esize); break;        /* UQSUB */
+        case (0 << 5) | 0x06: v = (sx(a,esize) >  sx(b,esize)) ? emask : 0; break;     /* CMGT */
+        case (1 << 5) | 0x06: v = ((a & emask) >  (b & emask)) ? emask : 0; break;     /* CMHI */
+        case (0 << 5) | 0x07: v = (sx(a,esize) >= sx(b,esize)) ? emask : 0; break;     /* CMGE */
+        case (1 << 5) | 0x07: v = ((a & emask) >= (b & emask)) ? emask : 0; break;     /* CMHS */
+        case (0 << 5) | 0x08: v = vreg_shift(a, (s8)(b&0xff), esize, 1, 0, 0); break;  /* SSHL */
+        case (1 << 5) | 0x08: v = vreg_shift(a, (s8)(b&0xff), esize, 0, 0, 0); break;  /* USHL */
+        case (0 << 5) | 0x09: v = vreg_shift(a, (s8)(b&0xff), esize, 1, 0, 1); break;  /* SQSHL */
+        case (1 << 5) | 0x09: v = vreg_shift(a, (s8)(b&0xff), esize, 0, 0, 1); break;  /* UQSHL */
+        case (0 << 5) | 0x0a: v = vreg_shift(a, (s8)(b&0xff), esize, 1, 1, 0); break;  /* SRSHL */
+        case (1 << 5) | 0x0a: v = vreg_shift(a, (s8)(b&0xff), esize, 0, 1, 0); break;  /* URSHL */
+        case (0 << 5) | 0x0b: v = vreg_shift(a, (s8)(b&0xff), esize, 1, 1, 1); break;  /* SQRSHL */
+        case (1 << 5) | 0x0b: v = vreg_shift(a, (s8)(b&0xff), esize, 0, 1, 1); break;  /* UQRSHL */
+        case (0 << 5) | 0x10: v = a + b; break;                                        /* ADD */
+        case (1 << 5) | 0x10: v = a - b; break;                                        /* SUB */
+        case (0 << 5) | 0x11: v = ((a & emask) & (b & emask)) ? emask : 0; break;       /* CMTST */
+        case (1 << 5) | 0x11: v = ((a & emask) == (b & emask)) ? emask : 0; break;      /* CMEQ */
+        case (0 << 5) | 0x16: { s64 p = 2*sx(a,esize)*sx(b,esize); v = sat_s(p >> esize, esize); } break;                       /* SQDMULH */
+        case (1 << 5) | 0x16: { s64 p = 2*sx(a,esize)*sx(b,esize) + ((s64)1 << (esize-1)); v = sat_s(p >> esize, esize); } break; /* SQRDMULH */
+        default: fpsimd_undef(c, insn); return;
+    }
+    velem_set(&r, size, 0, v & emask); c->v[Rd] = r;
+}
+
+static void simd_scalar_pairwise(CPU *c, u32 insn) {
+    unsigned U = BIT(29), opc = BITS(16, 12), Rn = BITS(9, 5), Rd = BITS(4, 0);
+    V128 r; r.d[0] = r.d[1] = 0;
+    if (U == 0 && opc == 0x1b) { r.d[0] = c->v[Rn].d[0] + c->v[Rn].d[1]; c->v[Rd] = r; return; } /* ADDP (d) */
+    if (U == 1 && (opc == 0x0c || opc == 0x0d || opc == 0x0f)) {       /* FADDP/FMAXP/FMINP/FMAXNMP/FMINNMP */
+        unsigned a = BIT(23), sz = BIT(22);
+        unsigned fop = (opc == 0x0d) ? FOP_ADD : (opc == 0x0f) ? (a ? FOP_MIN : FOP_MAX) : (a ? FOP_MINNM : FOP_MAXNM);
+        if (sz) vset_d(&r, 0, fop_d(fop, vget_d(&c->v[Rn], 0), vget_d(&c->v[Rn], 1), 0));
+        else    vset_s(&r, 0, fop_s(fop, vget_s(&c->v[Rn], 0), vget_s(&c->v[Rn], 1), 0));
+        c->v[Rd] = r; return;
+    }
+    fpsimd_undef(c, insn);
+}
+
+static void simd_scalar_three_diff(CPU *c, u32 insn) {
+    unsigned size = BITS(23, 22), opc = BITS(15, 12), Rm = BITS(20, 16), Rn = BITS(9, 5), Rd = BITS(4, 0);
+    unsigned esize = 8u << size; u64 emask = (1ULL << esize) - 1;
+    u64 a = velem_get(&c->v[Rn], size, 0) & emask, b = velem_get(&c->v[Rm], size, 0) & emask;
+    s64 pr = (s64)sat_s128((__int128)2 * sx(a, esize) * sx(b, esize), 2 * esize);
+    u64 d = velem_get(&c->v[Rd], size + 1, 0), v;
+    V128 r; r.d[0] = r.d[1] = 0;
+    switch (opc) {
+        case 0xd: v = (u64)pr; break;                                        /* SQDMULL */
+        case 0x9: v = ssat_add(sx(d, 2*esize), pr, 2*esize); break;          /* SQDMLAL */
+        case 0xb: v = ssat_sub(sx(d, 2*esize), pr, 2*esize); break;          /* SQDMLSL */
+        default: fpsimd_undef(c, insn); return;
+    }
+    velem_set(&r, size + 1, 0, v); c->v[Rd] = r;
+}
+
+static void simd_scalar_indexed(CPU *c, u32 insn) {
+    unsigned U = BIT(29), size = BITS(23, 22), opc = BITS(15, 12);
+    unsigned Rn = BITS(9, 5), Rd = BITS(4, 0), H = BIT(11), L = BIT(21), M = BIT(20);
+    V128 r; r.d[0] = r.d[1] = 0;
+    if (opc == 0x1 || opc == 0x5 || opc == 0x9) {     /* FP scalar by element */
+        unsigned op = (opc == 0x1) ? FOP_MLA : (opc == 0x5) ? FOP_MLS : (U ? FOP_MULX : FOP_MUL);
+        unsigned Rm = BITS(20, 16);
+        if (size == 3)      vset_d(&r, 0, fop_d(op, vget_d(&c->v[Rn], 0), vget_d(&c->v[Rm], H), vget_d(&c->v[Rd], 0)));
+        else if (size == 2) vset_s(&r, 0, fop_s(op, vget_s(&c->v[Rn], 0), vget_s(&c->v[Rm], (H<<1)|L), vget_s(&c->v[Rd], 0)));
+        else { fpsimd_undef(c, insn); return; }
+        c->v[Rd] = r; return;
+    }
+    unsigned Rm, index;
+    if (size == 1)      { Rm = BITS(19, 16); index = (H << 2) | (L << 1) | M; }
+    else if (size == 2) { Rm = BITS(20, 16); index = (H << 1) | L; }
+    else { fpsimd_undef(c, insn); return; }
+    unsigned esize = 8u << size; u64 emask = (1ULL << esize) - 1;
+    u64 a = velem_get(&c->v[Rn], size, 0) & emask, e = velem_get(&c->v[Rm], size, index) & emask;
+    if (opc == 0xc || opc == 0xd) {                   /* SQDMULH/SQRDMULH by element */
+        s64 p = 2 * sx(a, esize) * sx(e, esize);
+        if (opc == 0xd) p += (s64)1 << (esize - 1);
+        velem_set(&r, size, 0, sat_s(p >> esize, esize) & emask); c->v[Rd] = r; return;
+    }
+    if (opc == 0xb || opc == 0x3 || opc == 0x7) {     /* SQDMULL/SQDMLAL/SQDMLSL by element */
+        s64 pr = (s64)sat_s128((__int128)2 * sx(a, esize) * sx(e, esize), 2 * esize);
+        u64 d = velem_get(&c->v[Rd], size + 1, 0), v;
+        v = (opc == 0xb) ? (u64)pr : (opc == 0x3) ? ssat_add(sx(d, 2*esize), pr, 2*esize)
+                                                  : ssat_sub(sx(d, 2*esize), pr, 2*esize);
+        velem_set(&r, size + 1, 0, v); c->v[Rd] = r; return;
+    }
+    fpsimd_undef(c, insn);
+}
+
 void exec_fpsimd(CPU *c, u32 insn) {
     /* Scalar floating-point (bit30=0 distinguishes from scalar AdvSIMD). */
     if ((insn & 0x7f000000) == 0x1e000000) { exec_fp_scalar(c, insn); return; }
@@ -1828,6 +2016,14 @@ void exec_fpsimd(CPU *c, u32 insn) {
     /* ARMv8.2 crypto extensions (FEAT_SHA3 EOR3/BCAX/RAX1/XAR, FEAT_SHA512
      * H/H2/SU0/SU1). Nothing else decodes the 0xce top byte. */
     if (BITS(31, 24) == 0xce) { crypto_sha3_512(c, insn); return; }
+    /* Scalar Advanced SIMD (after crypto, which shares 0x5e). Scalar two-misc is
+     * handled by simd_scalar_cvt above; the rest dispatch here. */
+    if (BITS(28, 24) == 0x1e) {
+        if (BIT(21) == 1 && BIT(10) == 1)                          { simd_scalar_three_same(c, insn); return; }
+        if (BIT(21) == 1 && BITS(11, 10) == 0)                     { simd_scalar_three_diff(c, insn); return; }
+        if (BITS(21, 17) == 0x18 && BIT(11) == 1 && BIT(10) == 0)  { simd_scalar_pairwise(c, insn); return; }
+    }
+    if (BITS(28, 24) == 0x1f && BIT(10) == 0) { simd_scalar_indexed(c, insn); return; }
     /* AdvSIMD three-different (whole group: ADDL/SUBL/ADDW/SUBW/ADDHN/SUBHN/
      * ABAL/ABDL/MULL/MLAL/MLSL/SQDMULL/SQDMLAL/SQDMLSL). PMULL (opcode 0xe) is
      * decoded above; everything else with bits[11:10]=0, bit21=1 lands here. */
