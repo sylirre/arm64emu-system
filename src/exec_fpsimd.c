@@ -1301,6 +1301,21 @@ static void simd_scalar_cvt(CPU *c, u32 insn) {
         if (dbl) r.d[0] = t ? ~0ULL : 0; else r.s[0] = t ? 0xffffffffu : 0;
         c->v[Rd] = r; return;
     }
+    if (opcode == 0x1f && o2 == 1) {                 /* FRECPX: reciprocal of the exponent */
+        V128 r; r.d[0] = r.d[1] = 0;                 /* sign kept, mantissa zeroed, exp = ~exp */
+        if (dbl) {
+            u64 x = c->v[Rn].d[0], sign = x & (1ULL << 63);
+            unsigned exp = (x >> 52) & 0x7ff; u64 mant = x & 0xfffffffffffffULL;
+            if (exp == 0x7ff && mant) r.d[0] = x | (1ULL << 51);                 /* NaN -> quiet */
+            else r.d[0] = sign | ((u64)((exp == 0) ? 0x7fe : (~exp & 0x7ff)) << 52);
+        } else {
+            u32 x = c->v[Rn].s[0], sign = x & 0x80000000u;
+            unsigned exp = (x >> 23) & 0xff, mant = x & 0x7fffffu;
+            if (exp == 0xff && mant) r.s[0] = x | (1u << 22);                     /* NaN -> quiet */
+            else r.s[0] = sign | ((u32)((exp == 0) ? 0xfe : (~exp & 0xff)) << 23);
+        }
+        c->v[Rd] = r; return;
+    }
 
     /* Integer scalar two-misc (size = bits[23:22] selects element width). */
     unsigned size = BITS(23, 22), esize = 8u << size;
@@ -1450,7 +1465,57 @@ static void simd_scalar_shift(CPU *c, u32 insn) {
     unsigned U = BIT(29), immh = BITS(22, 19), immb = BITS(18, 16);
     unsigned opc = BITS(15, 11), Rn = BITS(9, 5), Rd = BITS(4, 0);
     unsigned immhb = (immh << 3) | immb;
-    if (!(immh & 8)) { fpsimd_undef(c, insn); return; }   /* scalar SHL/SHR are 64-bit */
+    unsigned size = (immh & 8) ? 3 : (immh & 4) ? 2 : (immh & 2) ? 1 : 0;
+    unsigned esize = 8u << size;
+
+    /* Saturating narrowing right shift (scalar b/h/s dest, 2*esize source):
+     * 0x10 SQSHRUN, 0x11 SQRSHRUN, 0x12 SQSHRN/UQSHRN, 0x13 SQRSHRN/UQRSHRN.
+     * (0x10/0x11 with U=0 are SHRN/RSHRN — not saturating.) Mirrors the vector
+     * narrowing kernel in simd_shift_imm() for a single lane. */
+    if (opc >= 0x10 && opc <= 0x13) {
+        if (immh & 8) { fpsimd_undef(c, insn); return; }   /* no 128-bit source */
+        unsigned shift = 2 * esize - immhb;
+        int round = (opc == 0x11 || opc == 0x13);
+        int nonsat = ((opc == 0x10 || opc == 0x11) && U == 0);          /* SHRN/RSHRN */
+        int signed_src = nonsat ? 0 : ((opc == 0x10 || opc == 0x11) ? 1 : (U == 0));
+        int sat_unsigned = (opc == 0x10 || opc == 0x11) ? 1 : (U == 1);
+        u64 emask = (1ULL << esize) - 1;
+        u64 smask = (2 * esize >= 64) ? ~0ULL : ((1ULL << (2 * esize)) - 1);
+        u64 src = velem_get(&c->v[Rn], size + 1, 0) & smask, nv;
+        if (nonsat) {
+            __int128 val = (__int128)src;
+            if (round) val += ((__int128)1 << (shift - 1));
+            nv = (u64)((unsigned __int128)val >> shift) & emask;
+        } else {
+            __int128 val = signed_src ? (__int128)sx(src, 2 * esize) : (__int128)src;
+            if (round) val += ((__int128)1 << (shift - 1));
+            val >>= shift;
+            if (sat_unsigned) nv = (val < 0) ? 0 : ((val > (__int128)emask) ? emask : (u64)val);
+            else              nv = sat_s128(val, esize);
+        }
+        V128 r; r.d[0] = r.d[1] = 0; velem_set(&r, size, 0, nv & emask); c->v[Rd] = r; return;
+    }
+
+    /* Fixed-point convert: SCVTF/UCVTF (0x1c), FCVTZS/FCVTZU (0x1f) — scalar
+     * S/D form (size==1 is FP16, left UNDEF). Mirrors the vector block. */
+    if (opc == 0x1c || opc == 0x1f) {
+        if (size != 2 && size != 3) { fpsimd_undef(c, insn); return; }   /* 16-bit = FP16 */
+        unsigned fbits = 2 * esize - immhb;
+        int dbl = (size == 3);
+        u64 pb = (u64)(fbits + 1023) << 52; double pw; memcpy(&pw, &pb, 8);  /* 2^fbits */
+        V128 r; r.d[0] = r.d[1] = 0;
+        if (opc == 0x1c) {                            /* fixed -> FP */
+            if (dbl) vset_d(&r, 0, (U ? (double)(u64)c->v[Rn].d[0] : (double)(s64)c->v[Rn].d[0]) / pw);
+            else     vset_s(&r, 0, (U ? (float)(u32)c->v[Rn].s[0]  : (float)(s32)c->v[Rn].s[0])  / (float)pw);
+        } else {                                      /* FP -> fixed (trunc, saturating) */
+            double x = (dbl ? vget_d(&c->v[Rn], 0) : (double)vget_s(&c->v[Rn], 0)) * pw;
+            u64 iv = fcvt_to_int(f_trunc(x), U == 0, dbl);
+            if (dbl) r.d[0] = iv; else r.s[0] = (u32)iv;
+        }
+        c->v[Rd] = r; return;
+    }
+
+    if (!(immh & 8)) { fpsimd_undef(c, insn); return; }   /* remaining same-width shifts are 64-bit */
     u64 a = c->v[Rn].d[0], v;
     int rsh = -(int)(128 - immhb);                                          /* right-shift amount */
     switch ((U << 5) | opc) {
@@ -1467,6 +1532,9 @@ static void simd_scalar_shift(CPU *c, u32 insn) {
         case (1 << 5) | 0x06: v = c->v[Rd].d[0] + vreg_shift(a, rsh, 64, 0, 1, 0); break; /* URSRA */
         case (0 << 5) | 0x0e: v = vreg_shift(a, (int)(immhb - 64), 64, 1, 0, 1); break;    /* SQSHL  */
         case (1 << 5) | 0x0e: v = vreg_shift(a, (int)(immhb - 64), 64, 0, 0, 1); break;    /* UQSHL  */
+        case (1 << 5) | 0x0c: { int sh = (int)(immhb - 64);              /* SQSHLU (signed -> unsigned) */
+            __int128 w = (__int128)(s64)a << sh;
+            v = (w < 0) ? 0 : ((w > (__int128)~0ULL) ? ~0ULL : (u64)w); } break;
         default: fpsimd_undef(c, insn); return;
     }
     c->v[Rd].d[0] = v; c->v[Rd].d[1] = 0;

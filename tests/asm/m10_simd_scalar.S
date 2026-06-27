@@ -449,6 +449,166 @@ _start:
 	CKX x0, 0x000000000002fffa, 75
 	umov x0, v0.d[1]
 	CKX x0, 0x0000000000000000, 1075
+	/* frecpx s0, s1 */
+	adr x10, Frx_s
+	ld1 {v1.16b}, [x10]
+	frecpx s0, s1
+	umov x0, v0.d[0]
+	CKX x0, 0x000000003f800000, 80
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1080
+	/* frecpx s0, s1 */
+	adr x10, Frx_sd
+	ld1 {v1.16b}, [x10]
+	frecpx s0, s1
+	umov x0, v0.d[0]
+	CKX x0, 0x000000007f000000, 81
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1081
+	/* frecpx s0, s1 */
+	adr x10, Frx_sn
+	ld1 {v1.16b}, [x10]
+	frecpx s0, s1
+	umov x0, v0.d[0]
+	CKX x0, 0x000000007fc00001, 82
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1082
+	/* frecpx d0, d1 */
+	adr x10, Frx_d
+	ld1 {v1.16b}, [x10]
+	frecpx d0, d1
+	umov x0, v0.d[0]
+	CKX x0, 0x3ff0000000000000, 83
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1083
+	/* frecpx d0, d1 */
+	adr x10, Frx_dd
+	ld1 {v1.16b}, [x10]
+	frecpx d0, d1
+	umov x0, v0.d[0]
+	CKX x0, 0x7fe0000000000000, 84
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1084
+	/* frecpx d0, d1 */
+	adr x10, Frx_dn
+	ld1 {v1.16b}, [x10]
+	frecpx d0, d1
+	umov x0, v0.d[0]
+	CKX x0, 0x7ff8000000000001, 85
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1085
+	/* sqshrn b0, h1, #3 */
+	adr x10, Ih1
+	ld1 {v1.16b}, [x10]
+	sqshrn b0, h1, #3
+	umov x0, v0.d[0]
+	CKX x0, 0x000000000000007f, 90
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1090
+	/* uqshrn h0, s1, #5 */
+	adr x10, Is1
+	ld1 {v1.16b}, [x10]
+	uqshrn h0, s1, #5
+	umov x0, v0.d[0]
+	CKX x0, 0x000000000000ffff, 91
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1091
+	/* sqshrun s0, d1, #7 */
+	adr x10, Id1
+	ld1 {v1.16b}, [x10]
+	sqshrun s0, d1, #7
+	umov x0, v0.d[0]
+	CKX x0, 0x00000000ffffffff, 92
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1092
+	/* sqrshrn h0, s1, #4 */
+	adr x10, Is1
+	ld1 {v1.16b}, [x10]
+	sqrshrn h0, s1, #4
+	umov x0, v0.d[0]
+	CKX x0, 0x0000000000007fff, 93
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1093
+	/* uqrshrn s0, d1, #6 */
+	adr x10, Id1
+	ld1 {v1.16b}, [x10]
+	uqrshrn s0, d1, #6
+	umov x0, v0.d[0]
+	CKX x0, 0x00000000ffffffff, 94
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1094
+	/* sqshrun h0, s1, #2 */
+	adr x10, Is1
+	ld1 {v1.16b}, [x10]
+	sqshrun h0, s1, #2
+	umov x0, v0.d[0]
+	CKX x0, 0x000000000000ffff, 95
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1095
+	/* scvtf s0, s1, #4 */
+	adr x10, IntS
+	ld1 {v1.16b}, [x10]
+	scvtf s0, s1, #4
+	umov x0, v0.d[0]
+	CKX x0, 0x0000000040c80000, 100
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1100
+	/* ucvtf d0, d1, #8 */
+	adr x10, IntD
+	ld1 {v1.16b}, [x10]
+	ucvtf d0, d1, #8
+	umov x0, v0.d[0]
+	CKX x0, 0x400f400000000000, 101
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1101
+	/* fcvtzs s0, s1, #4 */
+	adr x10, FixS
+	ld1 {v1.16b}, [x10]
+	fcvtzs s0, s1, #4
+	umov x0, v0.d[0]
+	CKX x0, 0x0000000000000068, 102
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1102
+	/* fcvtzs s0, s1, #3 */
+	adr x10, FixSn
+	ld1 {v1.16b}, [x10]
+	fcvtzs s0, s1, #3
+	umov x0, v0.d[0]
+	CKX x0, 0x00000000ffffffcc, 103
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1103
+	/* fcvtzu d0, d1, #8 */
+	adr x10, FixD
+	ld1 {v1.16b}, [x10]
+	fcvtzu d0, d1, #8
+	umov x0, v0.d[0]
+	CKX x0, 0x0000000000007bc0, 104
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1104
+	/* scvtf d0, d1, #10 */
+	adr x10, IntD
+	ld1 {v1.16b}, [x10]
+	scvtf d0, d1, #10
+	umov x0, v0.d[0]
+	CKX x0, 0x3fef400000000000, 105
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1105
+	/* sqshlu d0, d1, #3 */
+	adr x10, SqluP
+	ld1 {v1.16b}, [x10]
+	sqshlu d0, d1, #3
+	umov x0, v0.d[0]
+	CKX x0, 0x0000000000008000, 110
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1110
+	/* sqshlu d0, d1, #5 */
+	adr x10, SqluN
+	ld1 {v1.16b}, [x10]
+	sqshlu d0, d1, #5
+	umov x0, v0.d[0]
+	CKX x0, 0x0000000000000000, 111
+	umov x0, v0.d[1]
+	CKX x0, 0x0000000000000000, 1111
 	movz x0, #0
 	b done
 fail:
@@ -480,3 +640,16 @@ Vm4s: .word 0x3f800000, 0x40000000, 0x40400000, 0x40800000
 Vm2d: .word 0x00000000, 0x40000000, 0x00000000, 0x40100000
 Vm8h: .word 0x00020001, 0x00040003, 0x00060005, 0x00080007
 Vm4sI: .word 0x00000002, 0x00000003, 0x00000005, 0x00000007
+Frx_s: .word 0x40000000, 0x00000000, 0x00000000, 0x00000000
+Frx_sd: .word 0x00000001, 0x00000000, 0x00000000, 0x00000000
+Frx_sn: .word 0x7f800001, 0x00000000, 0x00000000, 0x00000000
+Frx_d: .word 0x00000000, 0x40000000, 0x00000000, 0x00000000
+Frx_dd: .word 0x00000001, 0x00000000, 0x00000000, 0x00000000
+Frx_dn: .word 0x00000001, 0x7ff00000, 0x00000000, 0x00000000
+IntS: .word 0x00000064, 0x00000000, 0x00000000, 0x00000000
+IntD: .word 0x000003e8, 0x00000000, 0x00000000, 0x00000000
+FixS: .word 0x40d00000, 0x00000000, 0x00000000, 0x00000000
+FixSn: .word 0xc0d00000, 0x00000000, 0x00000000, 0x00000000
+FixD: .word 0x00000000, 0x405ef000, 0x00000000, 0x00000000
+SqluP: .word 0x00001000, 0x00000000, 0x00000000, 0x00000000
+SqluN: .word 0xffffffff, 0xffffffff, 0x00000000, 0x00000000
