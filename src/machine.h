@@ -27,6 +27,9 @@ typedef struct {
 } MMIODev;
 
 #define MAX_DEVS 48
+/* Max attachable disks. Ceiling is the 31 non-net virtio-mmio slots (slot 0 is
+ * reserved for virtio-net); 8 is plenty and keeps the Machine arrays small. */
+#define MAX_DRIVES 8
 
 struct GIC;
 struct PL011;
@@ -70,10 +73,12 @@ typedef struct Machine {
     struct PL011    *uart;
     struct PL031    *rtc;
     struct FwCfg    *fwcfg;
-    struct VirtIOBlk *blk;
+    struct VirtIOBlk *blk[MAX_DRIVES];  /* attached disks, in attach order */
+    int    n_blk;
     struct VirtIONet *net;
 
-    const char *drive;            /* -drive image path, or NULL (no block device) */
+    const char *drives[MAX_DRIVES];  /* -drive image paths */
+    int    n_drives;
     bool net_enabled;             /* -net flag */
     NetFwd net_fwds[16];          /* -netfwd rules */
     int    n_net_fwds;

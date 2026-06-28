@@ -1,5 +1,5 @@
-/* virtio-net over modern (version 2) virtio-mmio transport, slot 1 of QEMU's
- * 'virt' map (0x0a000200, INTID 49 / SPI 17, edge-triggered per the DTB).
+/* virtio-net over modern (version 2) virtio-mmio transport, slot 0 of QEMU's
+ * 'virt' map (0x0a000000, INTID 48 / SPI 16, edge-triggered per the DTB).
  *
  * The backend is libslirp: a user-space TCP/IP stack that NATs guest traffic
  * through regular host sockets — no TAP, TUN, or privileges required.
@@ -406,7 +406,7 @@ static void net_write(void *opaque, u64 off, unsigned size, u64 val) {
 
 VirtIONet *virtio_net_create(Machine *m, GIC *gic) {
     VirtIONet *v = calloc(1, sizeof(*v));
-    v->m = m; v->gic = gic; v->irq = INTID_VIRTIO1;
+    v->m = m; v->gic = gic; v->irq = INTID_VIRTIO0;   /* slot 0 */
 
     /* Stable MAC: 52:54:00:12:34:56 (QEMU's default range). */
     static const uint8_t default_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
@@ -459,7 +459,7 @@ VirtIONet *virtio_net_create(Machine *m, GIC *gic) {
         }
     }
 
-    machine_add_device(m, 0x0a000200, 0x200, net_read, net_write, v, "virtio-net");
+    machine_add_device(m, 0x0a000000, 0x200, net_read, net_write, v, "virtio-net");
     m->net = v;
     fprintf(stderr, "[virtio-net] MAC %02x:%02x:%02x:%02x:%02x:%02x, "
             "guest 10.0.2.15/24 gw 10.0.2.2 dns 10.0.2.3\n",

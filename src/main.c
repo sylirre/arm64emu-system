@@ -45,13 +45,14 @@ static u8 *read_file(const char *path, size_t *len_out) {
 static void usage(const char *p) {
     fprintf(stderr,
         "usage: %s [-bios FW.fd] [-kernel Image] [-initrd cpio] [-append CMDLINE]\n"
-        "          [-drive IMG] [-net] [-netfwd tcp|udp:HOST_PORT:GUEST_PORT]\n"
+        "          [-drive IMG (repeatable)] [-net] [-netfwd tcp|udp:HOST_PORT:GUEST_PORT]\n"
         "          [-m MB] [-bin FLAT@ADDR] [-entry ADDR] [-el N] [-d] [-maxinsn N]\n", p);
 }
 
 int main(int argc, char **argv) {
     const char *bios = NULL, *kernel = NULL, *initrd = NULL, *append = "";
-    const char *binfile = NULL, *dtbfile = NULL, *drive = NULL;
+    const char *binfile = NULL, *dtbfile = NULL;
+    const char *drives[MAX_DRIVES]; int n_drives = 0;
     bool net_enabled = false;
     NetFwd net_fwds[16]; int n_net_fwds = 0;
     u64 ram_mb = 1024;
@@ -72,7 +73,10 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-rt")) g_rtrace = 1;
         else if (!strcmp(argv[i], "-maxinsn") && i + 1 < argc) max_insn = strtoull(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "-dtb") && i + 1 < argc) dtbfile = argv[++i];
-        else if (!strcmp(argv[i], "-drive") && i + 1 < argc) drive = argv[++i];
+        else if (!strcmp(argv[i], "-drive") && i + 1 < argc) {
+            if (n_drives >= MAX_DRIVES) { fprintf(stderr, "too many -drive disks\n"); return 1; }
+            drives[n_drives++] = argv[++i];
+        }
         else if (!strcmp(argv[i], "-net")) net_enabled = true;
         else if (!strcmp(argv[i], "-netfwd") && i + 1 < argc) {
             /* Format: tcp:HOST_PORT:GUEST_PORT or udp:HOST_PORT:GUEST_PORT */
@@ -116,7 +120,8 @@ int main(int argc, char **argv) {
 
     Machine m;
     machine_init(&m, ram_mb << 20);
-    m.drive = drive;            /* consumed by platform_build (virtio-blk slot 0) */
+    /* consumed by platform_build (virtio-blk: slots 1,2,3,...; net is slot 0) */
+    if (n_drives) { memcpy(m.drives, drives, n_drives * sizeof(drives[0])); m.n_drives = n_drives; }
     m.net_enabled = net_enabled;
     if (n_net_fwds) { memcpy(m.net_fwds, net_fwds, n_net_fwds * sizeof(NetFwd)); m.n_net_fwds = n_net_fwds; }
 

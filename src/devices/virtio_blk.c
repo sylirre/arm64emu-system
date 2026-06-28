@@ -37,7 +37,8 @@
 #define VIRTIO_BLK_S_UNSUPP  2
 
 typedef struct VirtIOBlk {
-    Machine *m; GIC *gic; int irq;     /* INTID 48 */
+    Machine *m; GIC *gic; int irq;     /* INTID_VIRTIO0 + slot */
+    int index;                         /* attach order (0-based); used for the serial */
     int fd; u64 capacity;              /* backing image; capacity in 512B sectors */
 
     u32 status, isr;                   /* Status, InterruptStatus */
@@ -127,10 +128,10 @@ static void blk_request(VirtIOBlk *v, u32 head) {
             }
         }
     } else if (type == VIRTIO_BLK_T_GET_ID) {
-        static const char id[] = "arm64emu-vblk0";
+        char id[20]; snprintf(id, sizeof(id), "arm64emu-vblk%d", v->index);
         if (n >= 3) {
             u8 idbuf[20]; memset(idbuf, 0, sizeof(idbuf));
-            memcpy(idbuf, id, sizeof(id) - 1);
+            memcpy(idbuf, id, strlen(id));
             u32 cap = dlen[1] < sizeof(idbuf) ? dlen[1] : (u32)sizeof(idbuf);
             phys_write_blk(m, addr[1], idbuf, cap);
             used_len += cap;
@@ -230,19 +231,21 @@ static void blk_write(void *opaque, u64 off, unsigned size, u64 val) {
     }
 }
 
-struct VirtIOBlk *virtio_blk_create(Machine *m, GIC *gic, const char *path) {
+struct VirtIOBlk *virtio_blk_create(Machine *m, GIC *gic, const char *path, int slot) {
     int fd = open(path, O_RDWR);
     if (fd < 0) { fprintf(stderr, "virtio-blk: cannot open %s\n", path); exit(1); }
     struct stat st;
     if (fstat(fd, &st) != 0) { fprintf(stderr, "virtio-blk: fstat %s\n", path); exit(1); }
 
+    u64 base = 0x0a000000ULL + (u64)slot * 0x200;
     VirtIOBlk *v = calloc(1, sizeof(*v));
-    v->m = m; v->gic = gic; v->irq = INTID_VIRTIO0;
+    v->m = m; v->gic = gic; v->irq = INTID_VIRTIO0 + slot;
+    v->index = m->n_blk;
     v->fd = fd;
     v->capacity = (u64)st.st_size / SECTOR_SIZE;
-    machine_add_device(m, 0x0a000000, 0x200, blk_read, blk_write, v, "virtio-blk");
-    m->blk = v;
-    fprintf(stderr, "[virtio-blk] %s: %llu sectors (%llu MiB)\n", path,
+    machine_add_device(m, base, 0x200, blk_read, blk_write, v, "virtio-blk");
+    m->blk[m->n_blk++] = v;
+    fprintf(stderr, "[virtio-blk] slot %d: %s: %llu sectors (%llu MiB)\n", slot, path,
             (unsigned long long)v->capacity, (unsigned long long)((u64)st.st_size >> 20));
     return v;
 }

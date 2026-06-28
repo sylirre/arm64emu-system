@@ -68,11 +68,12 @@ void fwcfg_set_legacy_kernel(FwCfg *f, const void *kernel, u32 ksize,
                              const void *initrd, u32 isize,
                              const char *cmdline);
 
-/* ---- virtio-blk (virtio-mmio slot 0) ---- */
+/* ---- virtio-blk (virtio-mmio slot N) ---- */
+/* slot picks the MMIO window (0x0a000000 + slot*0x200) and IRQ (INTID_VIRTIO0 + slot). */
 struct VirtIOBlk;
-struct VirtIOBlk *virtio_blk_create(Machine *m, GIC *gic, const char *path);
+struct VirtIOBlk *virtio_blk_create(Machine *m, GIC *gic, const char *path, int slot);
 
-/* ---- virtio-net (virtio-mmio slot 1) ---- */
+/* ---- virtio-net (virtio-mmio slot 0) ---- */
 struct VirtIONet;
 struct VirtIONet *virtio_net_create(Machine *m, GIC *gic);
 void              virtio_net_poll(struct VirtIONet *v);
