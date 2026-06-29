@@ -1,5 +1,6 @@
 /* Physical memory bus: RAM, flash, and MMIO device dispatch. */
 #include "machine.h"
+#include "devices.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -23,6 +24,14 @@ void machine_init(Machine *m, u64 ram_size) {
 }
 
 void machine_free(Machine *m) {
+    for (int i = 0; i < m->n_blk; i++) virtio_blk_destroy(m->blk[i]);
+    virtio_net_destroy(m->net);
+    virtio_9p_destroy(m->fs9p);
+    fwcfg_destroy(m->fwcfg);
+    free(m->gic);
+    free(m->timer);
+    free(m->uart);
+    free(m->rtc);
     free(m->ram);
     free(m->flash);
 }

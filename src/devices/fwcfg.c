@@ -179,3 +179,9 @@ FwCfg *fwcfg_create(Machine *m) {
     m->fwcfg = f;
     return f;
 }
+
+void fwcfg_destroy(FwCfg *f) {
+    if (!f) return;
+    for (int i = 0; i < f->n; i++) free(f->items[i].data);
+    free(f);
+}

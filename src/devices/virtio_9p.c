@@ -816,3 +816,9 @@ VirtIO9P *virtio_9p_create(Machine *m, GIC *gic, const char *root, const char *t
     fprintf(stderr, "[virtio-9p] slot %d: tag=%s root=%s\n", slot, v->tag, v->root);
     return v;
 }
+
+void virtio_9p_destroy(VirtIO9P *v) {
+    if (!v) return;
+    p9_reset(v);
+    free(v);
+}

@@ -466,3 +466,14 @@ VirtIONet *virtio_net_create(Machine *m, GIC *gic) {
             v->mac[0], v->mac[1], v->mac[2], v->mac[3], v->mac[4], v->mac[5]);
     return v;
 }
+
+void virtio_net_destroy(VirtIONet *v) {
+    if (!v) return;
+    if (v->slirp) slirp_cleanup(v->slirp);
+    while (v->timers) {
+        NetTimer *next = v->timers->next;
+        free(v->timers);
+        v->timers = next;
+    }
+    free(v);
+}

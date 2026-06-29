@@ -63,6 +63,7 @@ PL031 *pl031_create(Machine *m, GIC *gic);
 /* ---- fw_cfg ---- */
 typedef struct FwCfg FwCfg;
 FwCfg *fwcfg_create(Machine *m);
+void fwcfg_destroy(FwCfg *f);
 void fwcfg_add_file(FwCfg *f, const char *name, const void *data, u32 len);
 void fwcfg_set_legacy_kernel(FwCfg *f, const void *kernel, u32 ksize,
                              const void *initrd, u32 isize,
@@ -72,15 +73,18 @@ void fwcfg_set_legacy_kernel(FwCfg *f, const void *kernel, u32 ksize,
 /* slot picks the MMIO window (0x0a000000 + slot*0x200) and IRQ (INTID_VIRTIO0 + slot). */
 struct VirtIOBlk;
 struct VirtIOBlk *virtio_blk_create(Machine *m, GIC *gic, const char *path, int slot);
+void virtio_blk_destroy(struct VirtIOBlk *v);
 
 /* ---- virtio-net (virtio-mmio slot 0) ---- */
 struct VirtIONet;
 struct VirtIONet *virtio_net_create(Machine *m, GIC *gic);
 void              virtio_net_poll(struct VirtIONet *v);
+void              virtio_net_destroy(struct VirtIONet *v);
 
 /* ---- virtio-9p (virtio-mmio slot N) ---- */
 struct VirtIO9P;
 struct VirtIO9P *virtio_9p_create(Machine *m, GIC *gic, const char *root,
                                   const char *tag, int slot);
+void virtio_9p_destroy(struct VirtIO9P *v);
 
 #endif /* A64_DEVICES_H */

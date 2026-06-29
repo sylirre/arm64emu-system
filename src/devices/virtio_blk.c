@@ -249,3 +249,9 @@ struct VirtIOBlk *virtio_blk_create(Machine *m, GIC *gic, const char *path, int 
             (unsigned long long)v->capacity, (unsigned long long)((u64)st.st_size >> 20));
     return v;
 }
+
+void virtio_blk_destroy(struct VirtIOBlk *v) {
+    if (!v) return;
+    if (v->fd >= 0) close(v->fd);
+    free(v);
+}

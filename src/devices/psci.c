@@ -44,7 +44,7 @@ bool smccc_conduit(CPU *c, bool is_hvc) {
             c->stop = true; return true;
         case PSCI_SYSTEM_RESET:
             fprintf(stderr, "\n[PSCI SYSTEM_RESET]\n");
-            c->stop = true; return true;
+            c->reset_request = true; return true;
         default:
             ret = PSCI_NOT_SUPPORTED;
             break;

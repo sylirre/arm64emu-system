@@ -42,6 +42,64 @@ static u8 *read_file(const char *path, size_t *len_out) {
     return buf;
 }
 
+typedef struct BootConfig {
+    const char *bios, *kernel, *initrd, *append;
+    const char *binfile, *dtbfile;
+    const char *drives[MAX_DRIVES];
+    int n_drives;
+    const char *share_path, *share_tag;
+    bool net_enabled;
+    NetFwd net_fwds[16];
+    int n_net_fwds;
+    u64 ram_mb;
+    u64 entry;
+    int reset_el;
+    u64 bin_addr;
+} BootConfig;
+
+static void boot_machine(Machine *m, const BootConfig *cfg) {
+    u64 entry = cfg->entry;
+
+    machine_init(m, cfg->ram_mb << 20);
+    if (cfg->n_drives) {
+        memcpy(m->drives, cfg->drives, cfg->n_drives * sizeof(cfg->drives[0]));
+        m->n_drives = cfg->n_drives;
+    }
+    m->net_enabled = cfg->net_enabled;
+    if (cfg->n_net_fwds) {
+        memcpy(m->net_fwds, cfg->net_fwds, cfg->n_net_fwds * sizeof(NetFwd));
+        m->n_net_fwds = cfg->n_net_fwds;
+    }
+    m->share_path = cfg->share_path;
+    m->share_tag = cfg->share_tag;
+
+    if (cfg->bios) {
+        size_t n; u8 *fw = read_file(cfg->bios, &n);
+        if (n > m->flash_size) n = m->flash_size;
+        memcpy(m->flash, fw, n);
+        free(fw);
+        entry = entry ? entry : FLASH_BASE;   /* firmware resets at flash base */
+    }
+
+    if (cfg->binfile) {
+        size_t n; u8 *b = read_file(cfg->binfile, &n);
+        phys_write_blk(m, cfg->bin_addr, b, n);
+        free(b);
+        entry = entry ? entry : cfg->bin_addr;
+    }
+
+    if ((cfg->bios || cfg->kernel) && platform_build) platform_build(m);
+    if (cfg->dtbfile) {
+        size_t n; u8 *d = read_file(cfg->dtbfile, &n);
+        phys_write_blk(m, RAM_BASE, d, n);
+        free(d);
+    }
+    if (cfg->kernel && platform_setup_boot)
+        platform_setup_boot(m, cfg->kernel, cfg->initrd, cfg->append);
+
+    cpu_reset(&m->cpu, entry, (unsigned)cfg->reset_el);
+}
+
 static void usage(const char *p) {
     fprintf(stderr,
         "usage: %s [-bios FW.fd] [-kernel Image] [-initrd cpio] [-append CMDLINE]\n"
@@ -51,49 +109,41 @@ static void usage(const char *p) {
 }
 
 int main(int argc, char **argv) {
-    const char *bios = NULL, *kernel = NULL, *initrd = NULL, *append = "";
-    const char *binfile = NULL, *dtbfile = NULL;
-    const char *drives[MAX_DRIVES]; int n_drives = 0;
-    const char *share_path = NULL, *share_tag = "hostshare";
-    bool net_enabled = false;
-    NetFwd net_fwds[16]; int n_net_fwds = 0;
-    u64 ram_mb = 1024;
-    u64 entry = 0;
-    int reset_el = 1;
-    u64 bin_addr = RAM_BASE;
+    BootConfig cfg = { .append = "", .share_tag = "hostshare", .ram_mb = 1024,
+                       .reset_el = 1, .bin_addr = RAM_BASE };
     u64 max_insn = 0;     /* 0 = unlimited */
 
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "-bios") && i + 1 < argc) bios = argv[++i];
-        else if (!strcmp(argv[i], "-kernel") && i + 1 < argc) kernel = argv[++i];
-        else if (!strcmp(argv[i], "-initrd") && i + 1 < argc) initrd = argv[++i];
-        else if (!strcmp(argv[i], "-append") && i + 1 < argc) append = argv[++i];
-        else if (!strcmp(argv[i], "-m") && i + 1 < argc) ram_mb = strtoull(argv[++i], 0, 0);
-        else if (!strcmp(argv[i], "-entry") && i + 1 < argc) entry = strtoull(argv[++i], 0, 0);
-        else if (!strcmp(argv[i], "-el") && i + 1 < argc) reset_el = atoi(argv[++i]);
+        if (!strcmp(argv[i], "-bios") && i + 1 < argc) cfg.bios = argv[++i];
+        else if (!strcmp(argv[i], "-kernel") && i + 1 < argc) cfg.kernel = argv[++i];
+        else if (!strcmp(argv[i], "-initrd") && i + 1 < argc) cfg.initrd = argv[++i];
+        else if (!strcmp(argv[i], "-append") && i + 1 < argc) cfg.append = argv[++i];
+        else if (!strcmp(argv[i], "-m") && i + 1 < argc) cfg.ram_mb = strtoull(argv[++i], 0, 0);
+        else if (!strcmp(argv[i], "-entry") && i + 1 < argc) cfg.entry = strtoull(argv[++i], 0, 0);
+        else if (!strcmp(argv[i], "-el") && i + 1 < argc) cfg.reset_el = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-d")) g_trace = 1;
         else if (!strcmp(argv[i], "-rt")) g_rtrace = 1;
         else if (!strcmp(argv[i], "-maxinsn") && i + 1 < argc) max_insn = strtoull(argv[++i], 0, 0);
-        else if (!strcmp(argv[i], "-dtb") && i + 1 < argc) dtbfile = argv[++i];
+        else if (!strcmp(argv[i], "-dtb") && i + 1 < argc) cfg.dtbfile = argv[++i];
         else if (!strcmp(argv[i], "-drive") && i + 1 < argc) {
-            if (n_drives >= MAX_DRIVES) { fprintf(stderr, "too many -drive disks\n"); return 1; }
-            drives[n_drives++] = argv[++i];
+            if (cfg.n_drives >= MAX_DRIVES) { fprintf(stderr, "too many -drive disks\n"); return 1; }
+            cfg.drives[cfg.n_drives++] = argv[++i];
         }
         else if (!strcmp(argv[i], "-share") && i + 1 < argc) {
             char *s = argv[++i];
             char *comma = strstr(s, ",tag=");
             if (comma) {
                 *comma = '\0';
-                share_tag = comma + 5;
-                if (!*share_tag) { fprintf(stderr, "-share: empty tag\n"); return 1; }
+                cfg.share_tag = comma + 5;
+                if (!*cfg.share_tag) { fprintf(stderr, "-share: empty tag\n"); return 1; }
             }
-            share_path = s;
-            if (!*share_path) { fprintf(stderr, "-share: empty host directory\n"); return 1; }
+            cfg.share_path = s;
+            if (!*cfg.share_path) { fprintf(stderr, "-share: empty host directory\n"); return 1; }
         }
-        else if (!strcmp(argv[i], "-net")) net_enabled = true;
+        else if (!strcmp(argv[i], "-net")) cfg.net_enabled = true;
         else if (!strcmp(argv[i], "-netfwd") && i + 1 < argc) {
             /* Format: tcp:HOST_PORT:GUEST_PORT or udp:HOST_PORT:GUEST_PORT */
-            if (n_net_fwds >= 16) { fprintf(stderr, "too many -netfwd rules\n"); return 1; }
+            if (cfg.n_net_fwds >= 16) { fprintf(stderr, "too many -netfwd rules\n"); return 1; }
             char *s = argv[++i];
             bool is_udp = false;
             if (!strncmp(s, "tcp:", 4)) { is_udp = false; s += 4; }
@@ -102,16 +152,16 @@ int main(int argc, char **argv) {
             char *colon = strchr(s, ':');
             if (!colon) { fprintf(stderr, "-netfwd: missing guest port\n"); return 1; }
             *colon = '\0';
-            net_fwds[n_net_fwds].is_udp    = is_udp;
-            net_fwds[n_net_fwds].host_port  = atoi(s);
-            net_fwds[n_net_fwds].guest_port = atoi(colon + 1);
-            n_net_fwds++;
+            cfg.net_fwds[cfg.n_net_fwds].is_udp    = is_udp;
+            cfg.net_fwds[cfg.n_net_fwds].host_port  = atoi(s);
+            cfg.net_fwds[cfg.n_net_fwds].guest_port = atoi(colon + 1);
+            cfg.n_net_fwds++;
         } else if (!strcmp(argv[i], "-bin") && i + 1 < argc) {
             /* FILE or FILE@ADDR */
             char *s = argv[++i];
             char *at = strchr(s, '@');
-            if (at) { *at = 0; bin_addr = strtoull(at + 1, 0, 0); }
-            binfile = s;
+            if (at) { *at = 0; cfg.bin_addr = strtoull(at + 1, 0, 0); }
+            cfg.binfile = s;
         } else { usage(argv[0]); return 1; }
     }
 
@@ -131,43 +181,10 @@ int main(int argc, char **argv) {
      * (g_ring is also set by AECOV, so the coverage finder is covered too.) */
     g_debug_hooks = g_trace | g_rtrace | g_prof | g_ring | (g_tpc != 0);
 
+    if (!cfg.bios && !cfg.binfile) { usage(argv[0]); return 1; }
+
     Machine m;
-    machine_init(&m, ram_mb << 20);
-    /* consumed by platform_build (virtio-blk: slots 1,2,3,...; net is slot 0) */
-    if (n_drives) { memcpy(m.drives, drives, n_drives * sizeof(drives[0])); m.n_drives = n_drives; }
-    m.net_enabled = net_enabled;
-    if (n_net_fwds) { memcpy(m.net_fwds, net_fwds, n_net_fwds * sizeof(NetFwd)); m.n_net_fwds = n_net_fwds; }
-    m.share_path = share_path;
-    m.share_tag = share_tag;
-
-    if (bios) {
-        size_t n; u8 *fw = read_file(bios, &n);
-        if (n > m.flash_size) n = m.flash_size;
-        memcpy(m.flash, fw, n);
-        free(fw);
-        entry = entry ? entry : FLASH_BASE;   /* firmware resets at flash base */
-    }
-
-    if (binfile) {
-        size_t n; u8 *b = read_file(binfile, &n);
-        phys_write_blk(&m, bin_addr, b, n);
-        free(b);
-        entry = entry ? entry : bin_addr;
-    }
-
-    if (!bios && !binfile) { usage(argv[0]); return 1; }
-
-    if ((bios || kernel) && platform_build) platform_build(&m);
-    if (dtbfile) {                       /* override embedded DTB at RAM base */
-        size_t n; u8 *d = read_file(dtbfile, &n);
-        phys_write_blk(&m, RAM_BASE, d, n);
-        free(d);
-    }
-    if (kernel && platform_setup_boot)
-        platform_setup_boot(&m, kernel, initrd, append);
-
-    cpu_reset(&m.cpu, entry, (unsigned)reset_el);
-
+    boot_machine(&m, &cfg);
     g_sig_cpu = &m.cpu;
     tty_raw_enable();
     /* Register after tty_raw_enable() so these win over tty.c's cleanup-only handlers. */
@@ -180,6 +197,14 @@ int main(int argc, char **argv) {
     for (;;) {
         if (machine_tick && (++ticker & tick_mask) == 0) machine_tick(&m);
         StepResult r = cpu_step(&m.cpu);
+        if (m.cpu.reset_request) {
+            fprintf(stderr, "[reboot]\n");
+            machine_free(&m);
+            boot_machine(&m, &cfg);
+            g_sig_cpu = &m.cpu;
+            ticker = 0;
+            continue;
+        }
         if (r == STEP_HALT) break;
         if (m.cpu.halted) {
             if (!machine_wait_for_event) break;
