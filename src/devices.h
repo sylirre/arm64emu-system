@@ -78,4 +78,9 @@ struct VirtIONet;
 struct VirtIONet *virtio_net_create(Machine *m, GIC *gic);
 void              virtio_net_poll(struct VirtIONet *v);
 
+/* ---- virtio-9p (virtio-mmio slot N) ---- */
+struct VirtIO9P;
+struct VirtIO9P *virtio_9p_create(Machine *m, GIC *gic, const char *root,
+                                  const char *tag, int slot);
+
 #endif /* A64_DEVICES_H */

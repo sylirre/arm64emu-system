@@ -45,7 +45,8 @@ static u8 *read_file(const char *path, size_t *len_out) {
 static void usage(const char *p) {
     fprintf(stderr,
         "usage: %s [-bios FW.fd] [-kernel Image] [-initrd cpio] [-append CMDLINE]\n"
-        "          [-drive IMG (repeatable)] [-net] [-netfwd tcp|udp:HOST_PORT:GUEST_PORT]\n"
+        "          [-drive IMG (repeatable)] [-share HOSTDIR[,tag=TAG]]\n"
+        "          [-net] [-netfwd tcp|udp:HOST_PORT:GUEST_PORT]\n"
         "          [-m MB] [-bin FLAT@ADDR] [-entry ADDR] [-el N] [-d] [-maxinsn N]\n", p);
 }
 
@@ -53,6 +54,7 @@ int main(int argc, char **argv) {
     const char *bios = NULL, *kernel = NULL, *initrd = NULL, *append = "";
     const char *binfile = NULL, *dtbfile = NULL;
     const char *drives[MAX_DRIVES]; int n_drives = 0;
+    const char *share_path = NULL, *share_tag = "hostshare";
     bool net_enabled = false;
     NetFwd net_fwds[16]; int n_net_fwds = 0;
     u64 ram_mb = 1024;
@@ -76,6 +78,17 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-drive") && i + 1 < argc) {
             if (n_drives >= MAX_DRIVES) { fprintf(stderr, "too many -drive disks\n"); return 1; }
             drives[n_drives++] = argv[++i];
+        }
+        else if (!strcmp(argv[i], "-share") && i + 1 < argc) {
+            char *s = argv[++i];
+            char *comma = strstr(s, ",tag=");
+            if (comma) {
+                *comma = '\0';
+                share_tag = comma + 5;
+                if (!*share_tag) { fprintf(stderr, "-share: empty tag\n"); return 1; }
+            }
+            share_path = s;
+            if (!*share_path) { fprintf(stderr, "-share: empty host directory\n"); return 1; }
         }
         else if (!strcmp(argv[i], "-net")) net_enabled = true;
         else if (!strcmp(argv[i], "-netfwd") && i + 1 < argc) {
@@ -124,6 +137,8 @@ int main(int argc, char **argv) {
     if (n_drives) { memcpy(m.drives, drives, n_drives * sizeof(drives[0])); m.n_drives = n_drives; }
     m.net_enabled = net_enabled;
     if (n_net_fwds) { memcpy(m.net_fwds, net_fwds, n_net_fwds * sizeof(NetFwd)); m.n_net_fwds = n_net_fwds; }
+    m.share_path = share_path;
+    m.share_tag = share_tag;
 
     if (bios) {
         size_t n; u8 *fw = read_file(bios, &n);

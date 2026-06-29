@@ -38,6 +38,7 @@ struct FwCfg;
 struct ARMTimer;
 struct VirtIOBlk;
 struct VirtIONet;
+struct VirtIO9P;
 
 typedef struct NetFwd {
     bool is_udp;
@@ -76,12 +77,15 @@ typedef struct Machine {
     struct VirtIOBlk *blk[MAX_DRIVES];  /* attached disks, in attach order */
     int    n_blk;
     struct VirtIONet *net;
+    struct VirtIO9P *fs9p;
 
     const char *drives[MAX_DRIVES];  /* -drive image paths */
     int    n_drives;
     bool net_enabled;             /* -net flag */
     NetFwd net_fwds[16];          /* -netfwd rules */
     int    n_net_fwds;
+    const char *share_path;        /* -share host directory */
+    const char *share_tag;         /* virtio-9p mount tag */
 
     BusStatus last_bus_status;    /* set by phys_* on fault */
 } Machine;

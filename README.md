@@ -33,8 +33,16 @@ make test                  # runs the assembly self-tests
 ```
 
 Useful flags: `-m <MB>` RAM size, `-dtb FILE` supply a device tree,
-`-bin FILE@ADDR` load a flat binary (bare-metal tests), `-d` per-instruction
-trace, `-rt` register trace, `-maxinsn N` stop after N instructions.
+`-drive IMG` attach virtio-blk disks, `-share HOSTDIR[,tag=TAG]` expose a host
+directory through virtio-9p, `-bin FILE@ADDR` load a flat binary (bare-metal
+tests), `-d` per-instruction trace, `-rt` register trace, `-maxinsn N` stop
+after N instructions.
+
+Inside Linux, mount a shared host directory with:
+
+```sh
+mount -t 9p -o trans=virtio,version=9p2000.L hostshare /mnt
+```
 
 Debug/bring-up env vars (all off by default, no runtime cost when unset):
 `AEDBG=N` device/IRQ + fw_cfg/flash logging, `AEPROF=1` hot-PC profiler,
@@ -82,7 +90,8 @@ tests/          self-checking assembly tests + QEMU differential helpers
 - **Platform devices**: GICv2, generic timer (periodic IRQs), PL011 serial,
   PL031 RTC, PSCI (HVC/SMC), fw_cfg (data port + DMA, legacy kernel keys),
   **Intel CFI (pflash_cfi01) NOR flash** so EDK2's UEFI variable store works,
-  and empty virtio-mmio / PCIe / GICv2m / GPIO transports so probing behaves.
+  virtio-net, virtio-blk, virtio-9p host-directory sharing, and empty
+  virtio-mmio / PCIe / GICv2m / GPIO transports so probing behaves.
 
 ## Differential testing against QEMU (development only)
 
@@ -113,9 +122,7 @@ an exception-return bug (instruction-abort ELR pointing at the wrong PC).
   demand (the kernel/musl exercise more NEON than the firmware); a subtle
   correctness issue can surface deep in a complex init script. Interpreter
   **performance** is ~40 MIPS, so a full distro boot is slow (see *Performance
-  notes* below for why a decoded-instruction cache did **not** help). **virtio-blk**
-  (for a disk-backed rootfs) is future work; today the rootfs is the fw_cfg
-  initramfs.
+  notes* below for why a decoded-instruction cache did **not** help).
 
 These are incremental extensions along the path already established. The hard
 parts — a correct CPU/MMU/exception core, the device model, the CFI flash and
