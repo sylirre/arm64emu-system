@@ -5,6 +5,7 @@
  * host time. Matches the generic timer's AE_RTCLOCK gating. */
 #include "../devices.h"
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 /* Fixed wall-clock base for deterministic mode: 2025-01-01T00:00:00Z. */
@@ -48,4 +49,14 @@ PL031 *pl031_create(Machine *m, GIC *gic) {
     machine_add_device(m, RTC_BASE, 0x1000, rtc_read, rtc_write, p, "pl031");
     m->rtc = p;
     return p;
+}
+
+/* Return the RTC to power-on state (system reset): clear the match/load/control
+ * registers and any pending alarm interrupt; keeps the GIC backpointer. The
+ * wall-clock time itself is derived from the host, so it is unaffected. */
+void pl031_reset(PL031 *p) {
+    GIC *gic = p->gic;
+    memset(p, 0, sizeof(*p));
+    p->gic = gic;
+    gic_set_irq(gic, INTID_RTC, 0);
 }

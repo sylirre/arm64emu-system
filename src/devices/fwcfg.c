@@ -165,6 +165,15 @@ static void fwcfg_write(void *opaque, u64 off, unsigned size, u64 val) {
     }
 }
 
+/* Return fw_cfg to power-on selector state (system reset). The item table
+ * (signature, kernel/initrd/cmdline payloads, file dir) is static for the run,
+ * so it persists; only the in-flight selector/offset/DMA cursor is cleared. */
+void fwcfg_reset(FwCfg *f) {
+    f->sel = 0;
+    f->offset = 0;
+    f->dma_hi = 0;
+}
+
 FwCfg *fwcfg_create(Machine *m) {
     FwCfg *f = calloc(1, sizeof(*f));
     f->m = m;

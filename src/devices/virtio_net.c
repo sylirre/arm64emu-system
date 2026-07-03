@@ -97,8 +97,15 @@ static void net_reset(VirtIONet *v) {
         v->q_desc[q] = v->q_avail[q] = v->q_used[q] = 0;
         v->last_avail[q] = 0;
     }
+    v->rx_head = v->rx_tail = 0;    /* drop frames queued for the old driver */
     gic_set_irq(v->gic, v->irq, 0);
 }
+
+/* System-reset entry point: identical to a guest-driven STATUS=0 device reset.
+ * Called explicitly on reboot because virtio-net is background-polled, so its
+ * queues must be quiesced before the rebooting firmware reuses guest RAM (the
+ * slirp backend and any host port-forwards are preserved). */
+void virtio_net_reset(VirtIONet *v) { net_reset(v); }
 
 static void push_used(VirtIONet *v, int q, uint16_t id, uint32_t len) {
     Machine *m = v->m;

@@ -2,6 +2,7 @@
 #include "../devices.h"
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 
 #define SPURIOUS 1023
 
@@ -186,4 +187,14 @@ GIC *gic_create(Machine *m) {
     machine_add_device(m, GICC_BASE, 0x10000, gicc_read, gicc_write, g, "gicc");
     m->gic = g;
     return g;
+}
+
+/* Return the distributor/CPU interface to power-on state (system reset). Clears
+ * all enable/pending/active/line/config state so stale interrupts from the prior
+ * boot don't leak into the rebooted machine; keeps the CPU backpointer. */
+void gic_reset(GIC *g) {
+    CPU *cpu = g->cpu;
+    memset(g, 0, sizeof(*g));
+    g->cpu = cpu;
+    g->pmr = 0;
 }

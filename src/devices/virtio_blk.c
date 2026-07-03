@@ -18,9 +18,11 @@
 #define QUEUE_NUM_MAX 256        /* QueueNumMax for the single requestq */
 #define VIRTQ_MAX     256        /* descriptor-chain walk bound (== QueueNumMax) */
 
-/* Feature bits we advertise: only VIRTIO_F_VERSION_1 (bit 32), mandatory for a
- * modern device. No optional blk features, keeping request handling minimal. */
+/* Feature bits we advertise: VIRTIO_F_VERSION_1 (bit 32), mandatory for a modern
+ * device, plus VIRTIO_BLK_F_RO (bit 5) for read-only disks. VIRTIO_BLK_F_RO is
+ * added per-instance in virtio_blk_create; the base set stays minimal. */
 #define VIRTIO_F_VERSION_1 (1ULL << 32)
+#define VIRTIO_BLK_F_RO    (1ULL << 5)
 #define BLK_FEATURES       VIRTIO_F_VERSION_1
 
 /* Split-virtqueue descriptor flags. */
@@ -40,6 +42,8 @@ typedef struct VirtIOBlk {
     Machine *m; GIC *gic; int irq;     /* INTID_VIRTIO0 + slot */
     int index;                         /* attach order (0-based); used for the serial */
     int fd; u64 capacity;              /* backing image; capacity in 512B sectors */
+    bool ro;                           /* read-only disk (advertises VIRTIO_BLK_F_RO) */
+    u64 features;                      /* device feature bits (BLK_FEATURES [| RO]) */
 
     u32 status, isr;                   /* Status, InterruptStatus */
     u32 dev_feat_sel, drv_feat_sel; u64 drv_feat;
@@ -102,7 +106,9 @@ static void blk_request(VirtIOBlk *v, u32 head) {
     u64 off = sector * SECTOR_SIZE;
 
     /* Data descriptors are the middle ones [1 .. n-2]. */
-    if (type == VIRTIO_BLK_T_IN || type == VIRTIO_BLK_T_OUT) {
+    if (type == VIRTIO_BLK_T_OUT && v->ro) {
+        status = VIRTIO_BLK_S_IOERR;                 /* write to read-only disk */
+    } else if (type == VIRTIO_BLK_T_IN || type == VIRTIO_BLK_T_OUT) {
         u64 total = 0;
         for (u32 i = 1; i + 1 < n; i++) total += dlen[i];
         if (off + total > v->capacity * SECTOR_SIZE) {
@@ -186,8 +192,8 @@ static u64 blk_read(void *opaque, u64 off, unsigned size) {
         case 0x008: return 2;                        /* DeviceID = block  */
         case 0x00c: return 0x554d4551;               /* VendorID "QEMU"   */
         case 0x010:                                  /* DeviceFeatures    */
-            return v->dev_feat_sel == 1 ? (u32)(BLK_FEATURES >> 32)
-                                        : (u32)(BLK_FEATURES & 0xffffffff);
+            return v->dev_feat_sel == 1 ? (u32)(v->features >> 32)
+                                        : (u32)(v->features & 0xffffffff);
         case 0x034:                                  /* QueueNumMax       */
             return v->queue_sel == 0 ? QUEUE_NUM_MAX : 0;
         case 0x044: return v->q_ready;               /* QueueReady        */
@@ -231,8 +237,8 @@ static void blk_write(void *opaque, u64 off, unsigned size, u64 val) {
     }
 }
 
-struct VirtIOBlk *virtio_blk_create(Machine *m, GIC *gic, const char *path, int slot) {
-    int fd = open(path, O_RDWR);
+struct VirtIOBlk *virtio_blk_create(Machine *m, GIC *gic, const char *path, bool ro, int slot) {
+    int fd = open(path, ro ? O_RDONLY : O_RDWR);
     if (fd < 0) { fprintf(stderr, "virtio-blk: cannot open %s\n", path); exit(1); }
     struct stat st;
     if (fstat(fd, &st) != 0) { fprintf(stderr, "virtio-blk: fstat %s\n", path); exit(1); }
@@ -242,10 +248,13 @@ struct VirtIOBlk *virtio_blk_create(Machine *m, GIC *gic, const char *path, int 
     v->m = m; v->gic = gic; v->irq = INTID_VIRTIO0 + slot;
     v->index = m->n_blk;
     v->fd = fd;
+    v->ro = ro;
+    v->features = BLK_FEATURES | (ro ? VIRTIO_BLK_F_RO : 0);
     v->capacity = (u64)st.st_size / SECTOR_SIZE;
     machine_add_device(m, base, 0x200, blk_read, blk_write, v, "virtio-blk");
     m->blk[m->n_blk++] = v;
-    fprintf(stderr, "[virtio-blk] slot %d: %s: %llu sectors (%llu MiB)\n", slot, path,
-            (unsigned long long)v->capacity, (unsigned long long)((u64)st.st_size >> 20));
+    fprintf(stderr, "[virtio-blk] slot %d: %s: %llu sectors (%llu MiB)%s\n", slot, path,
+            (unsigned long long)v->capacity, (unsigned long long)((u64)st.st_size >> 20),
+            ro ? " [ro]" : "");
     return v;
 }

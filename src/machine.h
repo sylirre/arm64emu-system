@@ -30,6 +30,9 @@ typedef struct {
 /* Max attachable disks. Ceiling is the 31 non-net virtio-mmio slots (slot 0 is
  * reserved for virtio-net); 8 is plenty and keeps the Machine arrays small. */
 #define MAX_DRIVES 8
+/* Max host directory shares (virtio-9p). Same 31-slot ceiling shared with disks
+ * (net=slot 0, then disks, then shares); 8 keeps the Machine arrays small. */
+#define MAX_SHARES 8
 
 struct GIC;
 struct PL011;
@@ -38,12 +41,28 @@ struct FwCfg;
 struct ARMTimer;
 struct VirtIOBlk;
 struct VirtIONet;
+struct VirtIO9P;
 
 typedef struct NetFwd {
     bool is_udp;
     int  host_port;
     int  guest_port;
 } NetFwd;
+
+/* A -virtfs host directory share: exported to the guest as a virtio-9p device
+ * with mount tag `tag`; `ro` maps the whole tree read-only. */
+typedef struct VirtFS {
+    const char *path;   /* host directory to export */
+    const char *tag;    /* 9p mount tag (guest `mount -t 9p <tag> ...`) */
+    bool        ro;     /* read-only share */
+} VirtFS;
+
+/* A -drive disk: backing image `path`; `ro` opens it O_RDONLY and advertises
+ * VIRTIO_BLK_F_RO so the guest mounts it read-only and writes are rejected. */
+typedef struct Drive {
+    const char *path;   /* host image file */
+    bool        ro;     /* read-only disk */
+} Drive;
 
 typedef struct Machine {
     CPU cpu;
@@ -76,9 +95,13 @@ typedef struct Machine {
     struct VirtIOBlk *blk[MAX_DRIVES];  /* attached disks, in attach order */
     int    n_blk;
     struct VirtIONet *net;
+    struct VirtIO9P  *fs[MAX_SHARES];   /* attached 9p shares, in attach order */
+    int    n_fs;
 
-    const char *drives[MAX_DRIVES];  /* -drive image paths */
+    Drive  drives[MAX_DRIVES];   /* -drive disks */
     int    n_drives;
+    VirtFS shares[MAX_SHARES];    /* -virtfs host directory shares */
+    int    n_shares;
     bool net_enabled;             /* -net flag */
     NetFwd net_fwds[16];          /* -netfwd rules */
     int    n_net_fwds;
@@ -88,6 +111,9 @@ typedef struct Machine {
 
 void machine_init(Machine *m, u64 ram_size);
 void machine_free(Machine *m);
+
+/* Return the NOR flash CFI command state machine to read-array/ready (reset). */
+void flash_cfi_reset(Machine *m);
 void machine_add_device(Machine *m, u64 base, u64 size, mmio_read_fn r,
                         mmio_write_fn w, void *opaque, const char *name);
 

@@ -133,6 +133,18 @@ static bool flash_cfi_read(Machine *m, u64 off, unsigned size, u64 *out) {
     return true;
 }
 
+/* Return the NOR flash command state machine to read-array/ready on system
+ * reset. The array contents (UEFI variable store) are non-volatile and left
+ * intact; this only clears a program/erase left in flight when the reset hit. */
+void flash_cfi_reset(Machine *m) {
+    for (int b = 0; b < 2; b++) {
+        m->flash_cfi[b].mode   = FL_ARRAY;
+        m->flash_cfi[b].prog   = PG_NONE;
+        m->flash_cfi[b].status = FL_STAT_RDY;
+        m->flash_cfi[b].buf_base = m->flash_cfi[b].buf_cnt = m->flash_cfi[b].buf_seen = 0;
+    }
+}
+
 static MMIODev *find_dev(Machine *m, u64 pa) {
     for (int i = 0; i < m->ndev; i++) {
         MMIODev *d = &m->dev[i];

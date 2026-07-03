@@ -61,17 +61,26 @@ void platform_build(Machine *m) {
     machine_add_device(m, 0x09030000, 0x1000,       stub_zero_read, stub_write, m, "gpio-stub");
 
     /* virtio-mmio: 32 slots (0x0a000000–0x0a003fff, stride 0x200).
-     * Slot 0 is reserved for virtio-net (-net); disks (-drive) take slots 1,2,3,...
-     * so block-device numbering is deterministic regardless of -net.
+     * Slot 0 is reserved for virtio-net (-net); disks (-drive) take slots
+     * 1..n_drives; host shares (-virtfs) take the next slots. Numbering is
+     * deterministic regardless of which devices are present.
      * Real devices must be registered before any stub that covers their range
-     * because find_dev uses first-match dispatch — so a disk at slot 2+ shadows
+     * because find_dev uses first-match dispatch — so a device at slot 2+ shadows
      * the catch-all stub below for its own 0x200 window.
      * Unoccupied slots get empty-transport stubs (DeviceID=0). */
+    if (m->n_drives + m->n_shares > 31) {   /* net=slot0, then disks, then shares */
+        fprintf(stderr, "too many virtio-mmio devices (%d disks + %d shares > 31 slots)\n",
+                m->n_drives, m->n_shares);
+        exit(1);
+    }
     if (m->net_enabled) virtio_net_create(m, m->gic);
     for (int i = 0; i < m->n_drives; i++)
-        virtio_blk_create(m, m->gic, m->drives[i], i + 1);   /* slots 1,2,3,... */
+        virtio_blk_create(m, m->gic, m->drives[i].path, m->drives[i].ro, i + 1);  /* slots 1..n_drives */
+    for (int i = 0; i < m->n_shares; i++)                    /* slots after disks  */
+        virtio_9p_create(m, m->gic, m->shares[i].path, m->shares[i].tag,
+                         m->shares[i].ro, m->n_drives + 1 + i);
     if (!m->net_enabled) machine_add_device(m, 0x0a000000, 0x200, virtio_mmio_read, stub_write, m, "virtio-mmio");
-    if (m->n_drives == 0) machine_add_device(m, 0x0a000200, 0x200, virtio_mmio_read, stub_write, m, "virtio-mmio");
+    if (m->n_drives == 0 && m->n_shares == 0) machine_add_device(m, 0x0a000200, 0x200, virtio_mmio_read, stub_write, m, "virtio-mmio");
     machine_add_device(m, 0x0a000400, 0x3c00, virtio_mmio_read, stub_write, m, "virtio-mmio");
     machine_add_device(m, 0x3eff0000, 0x10000,      stub_ones_read, stub_write, m, "pcie-pio");
     machine_add_device(m, 0x10000000, 0x2eff0000,   stub_ones_read, stub_write, m, "pcie-mmio");
@@ -93,6 +102,29 @@ void platform_setup_boot(Machine *m, const char *kernel, const char *initrd,
     fprintf(stderr, "[boot] kernel=%u bytes initrd=%u bytes cmdline=\"%s\"\n",
             klen, ilen, append ? append : "");
     free(kdata); free(idata);
+}
+
+void machine_reset(Machine *m, u64 entry, unsigned reset_el) {
+    /* PSCI SYSTEM_RESET (warm reboot). Return every device to power-on state and
+     * restart the boot CPU without tearing down host-backed resources: the NOR
+     * flash (UEFI variable store), fw_cfg payloads, open -drive images and the
+     * slirp network all persist across the reboot, matching real hardware.
+     * virtio-blk/9p need no explicit reset here — the rebooting firmware/OS
+     * resets each through the virtio STATUS=0 probe handshake before first use;
+     * virtio-net is quiesced because it is polled in the background. */
+    if (m->gic)   gic_reset(m->gic);
+    if (m->uart)  pl011_reset(m->uart);
+    if (m->rtc)   pl031_reset(m->rtc);
+    if (m->fwcfg) fwcfg_reset(m->fwcfg);
+    if (m->net)   virtio_net_reset(m->net);
+    flash_cfi_reset(m);
+
+    /* Re-place the flattened device tree at the base of RAM (EDK2 reads it from
+     * PcdDeviceTreeInitialBaseAddress): the previous OS reused that memory. Only
+     * when a platform was actually built — a raw -bin run has no fw_cfg/DTB. */
+    if (m->fwcfg) phys_write_blk(m, RAM_BASE, virt_dtb, virt_dtb_len);
+
+    cpu_reset(&m->cpu, entry, reset_el);
 }
 
 void machine_tick(Machine *m) {

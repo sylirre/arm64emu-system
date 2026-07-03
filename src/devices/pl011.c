@@ -2,6 +2,7 @@
 #include "../devices.h"
 #include "../tty.h"
 #include <stdlib.h>
+#include <string.h>
 
 /* PrimeCell identification (amba bus matches on these). */
 static const u8 pl011_id[8] = { 0x11, 0x10, 0x14, 0x00, 0x0d, 0xf0, 0x05, 0xb1 };
@@ -86,4 +87,14 @@ PL011 *pl011_create(Machine *m, GIC *gic) {
     machine_add_device(m, UART_BASE, 0x1000, uart_read, uart_write, p, "pl011");
     m->uart = p;
     return p;
+}
+
+/* Return the UART to power-on state (system reset): drop masks, the RX FIFO
+ * (any type-ahead), and the pending interrupt; keeps the GIC backpointer. */
+void pl011_reset(PL011 *p) {
+    GIC *gic = p->gic;
+    memset(p, 0, sizeof(*p));
+    p->gic = gic;
+    p->cr = 0x300;     /* TXE|RXE */
+    gic_set_irq(gic, INTID_UART, 0);
 }

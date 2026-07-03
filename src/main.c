@@ -7,6 +7,7 @@
 #include <string.h>
 #include <signal.h>
 #include <unistd.h>
+#include <limits.h>
 
 /* On SIGINT/SIGTERM (e.g. a wall-clock `timeout` during a long boot), restore
  * the terminal and flush the diagnostics so a killed run still yields a profile
@@ -26,6 +27,7 @@ void platform_setup_boot(Machine *m, const char *kernel, const char *initrd,
                          const char *append) __attribute__((weak));
 void machine_wait_for_event(Machine *m) __attribute__((weak));
 void machine_tick(Machine *m) __attribute__((weak));
+void machine_reset(Machine *m, u64 entry, unsigned reset_el) __attribute__((weak));
 
 static u8 *read_file(const char *path, size_t *len_out) {
     FILE *f = fopen(path, "rb");
@@ -45,14 +47,26 @@ static u8 *read_file(const char *path, size_t *len_out) {
 static void usage(const char *p) {
     fprintf(stderr,
         "usage: %s [-bios FW.fd] [-kernel Image] [-initrd cpio] [-append CMDLINE]\n"
-        "          [-drive IMG (repeatable)] [-net] [-netfwd tcp|udp:HOST_PORT:GUEST_PORT]\n"
+        "          [-drive IMG[,ro] (repeatable)] [-net] [-netfwd tcp|udp:HOST_PORT:GUEST_PORT]\n"
+        "          [-virtfs DIR[,tag=TAG][,ro] (repeatable)]\n"
         "          [-m MB] [-bin FLAT@ADDR] [-entry ADDR] [-el N] [-d] [-maxinsn N]\n", p);
+}
+
+/* True if host paths a and b name the same file. Compares canonical (realpath)
+ * forms when both resolve; otherwise falls back to string equality so paths that
+ * don't exist yet are still compared (realpath fails on a missing path). */
+static bool same_host_path(const char *a, const char *b) {
+    char ca[PATH_MAX], cb[PATH_MAX];
+    const char *pa = realpath(a, ca) ? ca : a;
+    const char *pb = realpath(b, cb) ? cb : b;
+    return !strcmp(pa, pb);
 }
 
 int main(int argc, char **argv) {
     const char *bios = NULL, *kernel = NULL, *initrd = NULL, *append = "";
     const char *binfile = NULL, *dtbfile = NULL;
-    const char *drives[MAX_DRIVES]; int n_drives = 0;
+    Drive drives[MAX_DRIVES]; int n_drives = 0;
+    VirtFS shares[MAX_SHARES]; int n_shares = 0;
     bool net_enabled = false;
     NetFwd net_fwds[16]; int n_net_fwds = 0;
     u64 ram_mb = 1024;
@@ -74,8 +88,69 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-maxinsn") && i + 1 < argc) max_insn = strtoull(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "-dtb") && i + 1 < argc) dtbfile = argv[++i];
         else if (!strcmp(argv[i], "-drive") && i + 1 < argc) {
+            /* Format: IMG[,ro][,rw]. Default is read-write. */
             if (n_drives >= MAX_DRIVES) { fprintf(stderr, "too many -drive disks\n"); return 1; }
-            drives[n_drives++] = argv[++i];
+            char *s = argv[++i];                 /* argv is mutable; split in place */
+            char *path = s;
+            bool ro = false;
+            char *opt = strchr(s, ',');
+            if (opt) *opt = '\0';                /* terminate IMG at first comma   */
+            while (opt) {                        /* walk the ,opt,opt... suffix    */
+                char *cur = opt + 1;
+                char *nxt = strchr(cur, ',');
+                if (nxt) *nxt = '\0';
+                if      (!strcmp(cur, "ro")) ro = true;
+                else if (!strcmp(cur, "rw")) ro = false;
+                else { fprintf(stderr, "-drive: unknown option '%s'\n", cur); return 1; }
+                opt = nxt;
+            }
+            if (!path[0]) { fprintf(stderr, "-drive: empty path\n"); return 1; }
+            for (int d = 0; d < n_drives; d++)
+                if (same_host_path(drives[d].path, path)) {
+                    fprintf(stderr, "-drive: duplicate image '%s'\n", path); return 1;
+                }
+            drives[n_drives].path = path;
+            drives[n_drives].ro   = ro;
+            n_drives++;
+        }
+        else if (!strcmp(argv[i], "-virtfs") && i + 1 < argc) {
+            /* Format: PATH[,tag=TAG][,ro]. Default tag = basename of PATH. */
+            if (n_shares >= MAX_SHARES) { fprintf(stderr, "too many -virtfs shares\n"); return 1; }
+            char *s = argv[++i];                 /* argv is mutable; split in place */
+            char *path = s;
+            char *tag = NULL;
+            bool ro = false;
+            char *opt = strchr(s, ',');
+            if (opt) *opt = '\0';                /* terminate PATH at first comma  */
+            while (opt) {                        /* walk the ,opt,opt... suffix    */
+                char *cur = opt + 1;
+                char *nxt = strchr(cur, ',');
+                if (nxt) *nxt = '\0';
+                if (!strncmp(cur, "tag=", 4)) tag = cur + 4;
+                else if (!strcmp(cur, "ro")) ro = true;
+                else if (!strcmp(cur, "rw")) ro = false;
+                else { fprintf(stderr, "-virtfs: unknown option '%s'\n", cur); return 1; }
+                opt = nxt;
+            }
+            if (!path[0]) { fprintf(stderr, "-virtfs: empty path\n"); return 1; }
+            if (!tag) {                          /* default tag = basename(PATH)   */
+                size_t pl = strlen(path);
+                while (pl > 1 && path[pl - 1] == '/') path[--pl] = '\0';  /* trim '/' */
+                char *slash = strrchr(path, '/');
+                tag = (slash && slash[1]) ? slash + 1 : path;
+            }
+            for (int s2 = 0; s2 < n_shares; s2++) {
+                if (same_host_path(shares[s2].path, path)) {
+                    fprintf(stderr, "-virtfs: duplicate path '%s'\n", path); return 1;
+                }
+                if (!strcmp(shares[s2].tag, tag)) {
+                    fprintf(stderr, "-virtfs: duplicate tag '%s'\n", tag); return 1;
+                }
+            }
+            shares[n_shares].path = path;
+            shares[n_shares].tag  = tag;
+            shares[n_shares].ro   = ro;
+            n_shares++;
         }
         else if (!strcmp(argv[i], "-net")) net_enabled = true;
         else if (!strcmp(argv[i], "-netfwd") && i + 1 < argc) {
@@ -122,6 +197,7 @@ int main(int argc, char **argv) {
     machine_init(&m, ram_mb << 20);
     /* consumed by platform_build (virtio-blk: slots 1,2,3,...; net is slot 0) */
     if (n_drives) { memcpy(m.drives, drives, n_drives * sizeof(drives[0])); m.n_drives = n_drives; }
+    if (n_shares) { memcpy(m.shares, shares, n_shares * sizeof(shares[0])); m.n_shares = n_shares; }
     m.net_enabled = net_enabled;
     if (n_net_fwds) { memcpy(m.net_fwds, net_fwds, n_net_fwds * sizeof(NetFwd)); m.n_net_fwds = n_net_fwds; }
 
@@ -165,7 +241,17 @@ int main(int argc, char **argv) {
     for (;;) {
         if (machine_tick && (++ticker & tick_mask) == 0) machine_tick(&m);
         StepResult r = cpu_step(&m.cpu);
-        if (r == STEP_HALT) break;
+        if (r == STEP_HALT) {
+            if (m.cpu.reset && machine_reset) {   /* PSCI SYSTEM_RESET: warm reboot */
+                machine_reset(&m, entry, (unsigned)reset_el);
+                /* machine_reset restores the built-in DTB; re-apply file-based
+                 * overrides that live in RAM, which the previous OS reused. */
+                if (dtbfile) { size_t n; u8 *d = read_file(dtbfile, &n); phys_write_blk(&m, RAM_BASE, d, n); free(d); }
+                if (binfile) { size_t n; u8 *b = read_file(binfile, &n); phys_write_blk(&m, bin_addr, b, n); free(b); }
+                continue;
+            }
+            break;
+        }
         if (m.cpu.halted) {
             if (!machine_wait_for_event) break;
             machine_wait_for_event(&m);

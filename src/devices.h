@@ -36,6 +36,7 @@ typedef struct GIC {
 } GIC;
 
 GIC *gic_create(Machine *m);
+void gic_reset(GIC *g);           /* system reset: clear all interrupt state */
 void gic_set_irq(GIC *g, int intid, int level);
 void gic_update(GIC *g);
 
@@ -54,28 +55,40 @@ typedef struct PL011 {
     u32 cr, lcr_h, ibrd, fbrd, ifls;
 } PL011;
 PL011 *pl011_create(Machine *m, GIC *gic);
+void pl011_reset(PL011 *p);       /* system reset: clear FIFO/masks/interrupt */
 void pl011_rx_poll(Machine *m);   /* feed host stdin into RX FIFO */
 
 /* ---- PL031 RTC ---- */
 typedef struct PL031 { GIC *gic; u32 mr, lr, cr, imsc, ris; } PL031;
 PL031 *pl031_create(Machine *m, GIC *gic);
+void pl031_reset(PL031 *p);       /* system reset: clear match/control/interrupt */
 
 /* ---- fw_cfg ---- */
 typedef struct FwCfg FwCfg;
 FwCfg *fwcfg_create(Machine *m);
+void fwcfg_reset(FwCfg *f);       /* system reset: clear the selector/DMA cursor */
 void fwcfg_add_file(FwCfg *f, const char *name, const void *data, u32 len);
 void fwcfg_set_legacy_kernel(FwCfg *f, const void *kernel, u32 ksize,
                              const void *initrd, u32 isize,
                              const char *cmdline);
 
 /* ---- virtio-blk (virtio-mmio slot N) ---- */
-/* slot picks the MMIO window (0x0a000000 + slot*0x200) and IRQ (INTID_VIRTIO0 + slot). */
+/* slot picks the MMIO window (0x0a000000 + slot*0x200) and IRQ (INTID_VIRTIO0 + slot).
+ * ro opens the image O_RDONLY and advertises VIRTIO_BLK_F_RO (guest mounts read-only). */
 struct VirtIOBlk;
-struct VirtIOBlk *virtio_blk_create(Machine *m, GIC *gic, const char *path, int slot);
+struct VirtIOBlk *virtio_blk_create(Machine *m, GIC *gic, const char *path, bool ro, int slot);
 
 /* ---- virtio-net (virtio-mmio slot 0) ---- */
 struct VirtIONet;
 struct VirtIONet *virtio_net_create(Machine *m, GIC *gic);
 void              virtio_net_poll(struct VirtIONet *v);
+void              virtio_net_reset(struct VirtIONet *v);  /* system reset: quiesce queues */
+
+/* ---- virtio-9p host directory share (virtio-mmio slot N) ---- */
+/* Exports host directory `root` to the guest as a 9P2000.L filesystem named by
+ * `tag`; `ro` makes it read-only. slot picks the MMIO window / IRQ as for blk. */
+struct VirtIO9P;
+struct VirtIO9P *virtio_9p_create(Machine *m, GIC *gic, const char *root,
+                                  const char *tag, bool ro, int slot);
 
 #endif /* A64_DEVICES_H */
