@@ -7,6 +7,7 @@
 #include <string.h>
 #include <signal.h>
 #include <unistd.h>
+#include <limits.h>
 
 /* On SIGINT/SIGTERM (e.g. a wall-clock `timeout` during a long boot), restore
  * the terminal and flush the diagnostics so a killed run still yields a profile
@@ -48,6 +49,16 @@ static void usage(const char *p) {
         "          [-drive IMG[,ro] (repeatable)] [-net] [-netfwd tcp|udp:HOST_PORT:GUEST_PORT]\n"
         "          [-virtfs DIR[,tag=TAG][,ro] (repeatable)]\n"
         "          [-m MB] [-bin FLAT@ADDR] [-entry ADDR] [-el N] [-d] [-maxinsn N]\n", p);
+}
+
+/* True if host paths a and b name the same file. Compares canonical (realpath)
+ * forms when both resolve; otherwise falls back to string equality so paths that
+ * don't exist yet are still compared (realpath fails on a missing path). */
+static bool same_host_path(const char *a, const char *b) {
+    char ca[PATH_MAX], cb[PATH_MAX];
+    const char *pa = realpath(a, ca) ? ca : a;
+    const char *pb = realpath(b, cb) ? cb : b;
+    return !strcmp(pa, pb);
 }
 
 int main(int argc, char **argv) {
@@ -93,6 +104,10 @@ int main(int argc, char **argv) {
                 opt = nxt;
             }
             if (!path[0]) { fprintf(stderr, "-drive: empty path\n"); return 1; }
+            for (int d = 0; d < n_drives; d++)
+                if (same_host_path(drives[d].path, path)) {
+                    fprintf(stderr, "-drive: duplicate image '%s'\n", path); return 1;
+                }
             drives[n_drives].path = path;
             drives[n_drives].ro   = ro;
             n_drives++;
@@ -122,6 +137,14 @@ int main(int argc, char **argv) {
                 while (pl > 1 && path[pl - 1] == '/') path[--pl] = '\0';  /* trim '/' */
                 char *slash = strrchr(path, '/');
                 tag = (slash && slash[1]) ? slash + 1 : path;
+            }
+            for (int s2 = 0; s2 < n_shares; s2++) {
+                if (same_host_path(shares[s2].path, path)) {
+                    fprintf(stderr, "-virtfs: duplicate path '%s'\n", path); return 1;
+                }
+                if (!strcmp(shares[s2].tag, tag)) {
+                    fprintf(stderr, "-virtfs: duplicate tag '%s'\n", tag); return 1;
+                }
             }
             shares[n_shares].path = path;
             shares[n_shares].tag  = tag;
