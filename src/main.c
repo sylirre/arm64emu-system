@@ -45,7 +45,7 @@ static u8 *read_file(const char *path, size_t *len_out) {
 static void usage(const char *p) {
     fprintf(stderr,
         "usage: %s [-bios FW.fd] [-kernel Image] [-initrd cpio] [-append CMDLINE]\n"
-        "          [-drive IMG (repeatable)] [-net] [-netfwd tcp|udp:HOST_PORT:GUEST_PORT]\n"
+        "          [-drive IMG[,ro] (repeatable)] [-net] [-netfwd tcp|udp:HOST_PORT:GUEST_PORT]\n"
         "          [-virtfs DIR[,tag=TAG][,ro] (repeatable)]\n"
         "          [-m MB] [-bin FLAT@ADDR] [-entry ADDR] [-el N] [-d] [-maxinsn N]\n", p);
 }
@@ -53,7 +53,7 @@ static void usage(const char *p) {
 int main(int argc, char **argv) {
     const char *bios = NULL, *kernel = NULL, *initrd = NULL, *append = "";
     const char *binfile = NULL, *dtbfile = NULL;
-    const char *drives[MAX_DRIVES]; int n_drives = 0;
+    Drive drives[MAX_DRIVES]; int n_drives = 0;
     VirtFS shares[MAX_SHARES]; int n_shares = 0;
     bool net_enabled = false;
     NetFwd net_fwds[16]; int n_net_fwds = 0;
@@ -76,8 +76,26 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-maxinsn") && i + 1 < argc) max_insn = strtoull(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "-dtb") && i + 1 < argc) dtbfile = argv[++i];
         else if (!strcmp(argv[i], "-drive") && i + 1 < argc) {
+            /* Format: IMG[,ro][,rw]. Default is read-write. */
             if (n_drives >= MAX_DRIVES) { fprintf(stderr, "too many -drive disks\n"); return 1; }
-            drives[n_drives++] = argv[++i];
+            char *s = argv[++i];                 /* argv is mutable; split in place */
+            char *path = s;
+            bool ro = false;
+            char *opt = strchr(s, ',');
+            if (opt) *opt = '\0';                /* terminate IMG at first comma   */
+            while (opt) {                        /* walk the ,opt,opt... suffix    */
+                char *cur = opt + 1;
+                char *nxt = strchr(cur, ',');
+                if (nxt) *nxt = '\0';
+                if      (!strcmp(cur, "ro")) ro = true;
+                else if (!strcmp(cur, "rw")) ro = false;
+                else { fprintf(stderr, "-drive: unknown option '%s'\n", cur); return 1; }
+                opt = nxt;
+            }
+            if (!path[0]) { fprintf(stderr, "-drive: empty path\n"); return 1; }
+            drives[n_drives].path = path;
+            drives[n_drives].ro   = ro;
+            n_drives++;
         }
         else if (!strcmp(argv[i], "-virtfs") && i + 1 < argc) {
             /* Format: PATH[,tag=TAG][,ro]. Default tag = basename of PATH. */

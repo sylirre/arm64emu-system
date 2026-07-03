@@ -75,7 +75,7 @@ void platform_build(Machine *m) {
     }
     if (m->net_enabled) virtio_net_create(m, m->gic);
     for (int i = 0; i < m->n_drives; i++)
-        virtio_blk_create(m, m->gic, m->drives[i], i + 1);   /* slots 1..n_drives */
+        virtio_blk_create(m, m->gic, m->drives[i].path, m->drives[i].ro, i + 1);  /* slots 1..n_drives */
     for (int i = 0; i < m->n_shares; i++)                    /* slots after disks  */
         virtio_9p_create(m, m->gic, m->shares[i].path, m->shares[i].tag,
                          m->shares[i].ro, m->n_drives + 1 + i);

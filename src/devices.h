@@ -69,9 +69,10 @@ void fwcfg_set_legacy_kernel(FwCfg *f, const void *kernel, u32 ksize,
                              const char *cmdline);
 
 /* ---- virtio-blk (virtio-mmio slot N) ---- */
-/* slot picks the MMIO window (0x0a000000 + slot*0x200) and IRQ (INTID_VIRTIO0 + slot). */
+/* slot picks the MMIO window (0x0a000000 + slot*0x200) and IRQ (INTID_VIRTIO0 + slot).
+ * ro opens the image O_RDONLY and advertises VIRTIO_BLK_F_RO (guest mounts read-only). */
 struct VirtIOBlk;
-struct VirtIOBlk *virtio_blk_create(Machine *m, GIC *gic, const char *path, int slot);
+struct VirtIOBlk *virtio_blk_create(Machine *m, GIC *gic, const char *path, bool ro, int slot);
 
 /* ---- virtio-net (virtio-mmio slot 0) ---- */
 struct VirtIONet;

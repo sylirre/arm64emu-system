@@ -38,7 +38,8 @@ make test                  # runs the assembly self-tests
 ```
 
 Useful flags: `-m <MB>` RAM size, `-dtb FILE` supply a device tree,
-`-drive IMG` attach a virtio-blk disk (repeatable), `-net` user-mode
+`-drive IMG[,ro]` attach a virtio-blk disk (repeatable; `ro` opens the image
+read-only and advertises VIRTIO_BLK_F_RO), `-net` user-mode
 networking, `-virtfs DIR[,tag=TAG][,ro]` share a host directory over virtio-9p
 (repeatable), `-bin FILE@ADDR` load a flat binary (bare-metal tests), `-d`
 per-instruction trace, `-rt` register trace, `-maxinsn N` stop after N

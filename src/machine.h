@@ -57,6 +57,13 @@ typedef struct VirtFS {
     bool        ro;     /* read-only share */
 } VirtFS;
 
+/* A -drive disk: backing image `path`; `ro` opens it O_RDONLY and advertises
+ * VIRTIO_BLK_F_RO so the guest mounts it read-only and writes are rejected. */
+typedef struct Drive {
+    const char *path;   /* host image file */
+    bool        ro;     /* read-only disk */
+} Drive;
+
 typedef struct Machine {
     CPU cpu;
 
@@ -91,7 +98,7 @@ typedef struct Machine {
     struct VirtIO9P  *fs[MAX_SHARES];   /* attached 9p shares, in attach order */
     int    n_fs;
 
-    const char *drives[MAX_DRIVES];  /* -drive image paths */
+    Drive  drives[MAX_DRIVES];   /* -drive disks */
     int    n_drives;
     VirtFS shares[MAX_SHARES];    /* -virtfs host directory shares */
     int    n_shares;
