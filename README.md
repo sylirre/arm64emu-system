@@ -30,11 +30,34 @@ make test                  # runs the assembly self-tests
 ./arm64emu -bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
            -kernel Image -initrd initramfs \
            -append "console=ttyAMA0 earlycon=pl011,0x9000000"
+
+# Share host directories into the guest over virtio-9p (repeatable):
+./arm64emu -bios .../QEMU_EFI.fd -kernel Image -initrd initramfs \
+           -virtfs /path/to/project,tag=proj \
+           -virtfs /srv/data,tag=data,ro
 ```
 
 Useful flags: `-m <MB>` RAM size, `-dtb FILE` supply a device tree,
-`-bin FILE@ADDR` load a flat binary (bare-metal tests), `-d` per-instruction
-trace, `-rt` register trace, `-maxinsn N` stop after N instructions.
+`-drive IMG` attach a virtio-blk disk (repeatable), `-net` user-mode
+networking, `-virtfs DIR[,tag=TAG][,ro]` share a host directory over virtio-9p
+(repeatable), `-bin FILE@ADDR` load a flat binary (bare-metal tests), `-d`
+per-instruction trace, `-rt` register trace, `-maxinsn N` stop after N
+instructions.
+
+**Host directory sharing (`-virtfs`).** Each `-virtfs DIR` exports a host
+directory to the guest as a 9P2000.L filesystem on its own virtio-mmio slot.
+`tag=` names the mount (default: the directory's basename); `ro` makes it
+read-only (default is read-write, changes pass straight through to the host).
+Repeat `-virtfs` for multiple independent shares. Mount inside the guest with:
+
+```sh
+mount -t 9p -o trans=virtio,version=9p2000.L proj /mnt/proj
+```
+
+The guest kernel needs 9p-over-virtio support (`CONFIG_NET_9P`,
+`CONFIG_NET_9P_VIRTIO`, `CONFIG_9P_FS`, plus `virtio_mmio`) built in or as
+loadable modules. `..` is confined to the share root; symlinks inside a share
+are followed by the host, so a share is a convenience, not a security boundary.
 
 Debug/bring-up env vars (all off by default, no runtime cost when unset):
 `AEDBG=N` device/IRQ + fw_cfg/flash logging, `AEPROF=1` hot-PC profiler,
@@ -56,7 +79,8 @@ src/
   exception.c   exception entry/return (VBAR vectors, ESR/FAR/ELR/SPSR, ERET)
   memory.c      physical bus: RAM + NOR-flash CFI command set + MMIO dispatch
   tty.c         raw-terminal serial console via termios
-  devices/      gicv2, timer, pl011, pl031, psci, fwcfg
+  devices/      gicv2, timer, pl011, pl031, psci, fwcfg,
+                virtio_blk (-drive), virtio_net (-net), virtio_9p (-virtfs)
   fdt/virt.dts  device tree (QEMU virt tree; compiled to virt_dtb.h, embedded)
 tests/          self-checking assembly tests + QEMU differential helpers
 ```
@@ -113,9 +137,11 @@ an exception-return bug (instruction-abort ELR pointing at the wrong PC).
   demand (the kernel/musl exercise more NEON than the firmware); a subtle
   correctness issue can surface deep in a complex init script. Interpreter
   **performance** is ~40 MIPS, so a full distro boot is slow (see *Performance
-  notes* below for why a decoded-instruction cache did **not** help). **virtio-blk**
-  (for a disk-backed rootfs) is future work; today the rootfs is the fw_cfg
-  initramfs.
+  notes* below for why a decoded-instruction cache did **not** help).
+- **Devices**: **virtio-blk** (`-drive`, disk-backed rootfs), **virtio-net**
+  (`-net`, user-mode NAT via libslirp), and **virtio-9p** (`-virtfs`, host
+  directory sharing) are implemented over virtio-mmio, alongside the fw_cfg
+  initramfs rootfs.
 
 These are incremental extensions along the path already established. The hard
 parts — a correct CPU/MMU/exception core, the device model, the CFI flash and

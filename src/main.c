@@ -46,6 +46,7 @@ static void usage(const char *p) {
     fprintf(stderr,
         "usage: %s [-bios FW.fd] [-kernel Image] [-initrd cpio] [-append CMDLINE]\n"
         "          [-drive IMG (repeatable)] [-net] [-netfwd tcp|udp:HOST_PORT:GUEST_PORT]\n"
+        "          [-virtfs DIR[,tag=TAG][,ro] (repeatable)]\n"
         "          [-m MB] [-bin FLAT@ADDR] [-entry ADDR] [-el N] [-d] [-maxinsn N]\n", p);
 }
 
@@ -53,6 +54,7 @@ int main(int argc, char **argv) {
     const char *bios = NULL, *kernel = NULL, *initrd = NULL, *append = "";
     const char *binfile = NULL, *dtbfile = NULL;
     const char *drives[MAX_DRIVES]; int n_drives = 0;
+    VirtFS shares[MAX_SHARES]; int n_shares = 0;
     bool net_enabled = false;
     NetFwd net_fwds[16]; int n_net_fwds = 0;
     u64 ram_mb = 1024;
@@ -76,6 +78,37 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-drive") && i + 1 < argc) {
             if (n_drives >= MAX_DRIVES) { fprintf(stderr, "too many -drive disks\n"); return 1; }
             drives[n_drives++] = argv[++i];
+        }
+        else if (!strcmp(argv[i], "-virtfs") && i + 1 < argc) {
+            /* Format: PATH[,tag=TAG][,ro]. Default tag = basename of PATH. */
+            if (n_shares >= MAX_SHARES) { fprintf(stderr, "too many -virtfs shares\n"); return 1; }
+            char *s = argv[++i];                 /* argv is mutable; split in place */
+            char *path = s;
+            char *tag = NULL;
+            bool ro = false;
+            char *opt = strchr(s, ',');
+            if (opt) *opt = '\0';                /* terminate PATH at first comma  */
+            while (opt) {                        /* walk the ,opt,opt... suffix    */
+                char *cur = opt + 1;
+                char *nxt = strchr(cur, ',');
+                if (nxt) *nxt = '\0';
+                if (!strncmp(cur, "tag=", 4)) tag = cur + 4;
+                else if (!strcmp(cur, "ro")) ro = true;
+                else if (!strcmp(cur, "rw")) ro = false;
+                else { fprintf(stderr, "-virtfs: unknown option '%s'\n", cur); return 1; }
+                opt = nxt;
+            }
+            if (!path[0]) { fprintf(stderr, "-virtfs: empty path\n"); return 1; }
+            if (!tag) {                          /* default tag = basename(PATH)   */
+                size_t pl = strlen(path);
+                while (pl > 1 && path[pl - 1] == '/') path[--pl] = '\0';  /* trim '/' */
+                char *slash = strrchr(path, '/');
+                tag = (slash && slash[1]) ? slash + 1 : path;
+            }
+            shares[n_shares].path = path;
+            shares[n_shares].tag  = tag;
+            shares[n_shares].ro   = ro;
+            n_shares++;
         }
         else if (!strcmp(argv[i], "-net")) net_enabled = true;
         else if (!strcmp(argv[i], "-netfwd") && i + 1 < argc) {
@@ -122,6 +155,7 @@ int main(int argc, char **argv) {
     machine_init(&m, ram_mb << 20);
     /* consumed by platform_build (virtio-blk: slots 1,2,3,...; net is slot 0) */
     if (n_drives) { memcpy(m.drives, drives, n_drives * sizeof(drives[0])); m.n_drives = n_drives; }
+    if (n_shares) { memcpy(m.shares, shares, n_shares * sizeof(shares[0])); m.n_shares = n_shares; }
     m.net_enabled = net_enabled;
     if (n_net_fwds) { memcpy(m.net_fwds, net_fwds, n_net_fwds * sizeof(NetFwd)); m.n_net_fwds = n_net_fwds; }
 
