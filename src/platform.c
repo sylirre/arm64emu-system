@@ -104,6 +104,29 @@ void platform_setup_boot(Machine *m, const char *kernel, const char *initrd,
     free(kdata); free(idata);
 }
 
+void machine_reset(Machine *m, u64 entry, unsigned reset_el) {
+    /* PSCI SYSTEM_RESET (warm reboot). Return every device to power-on state and
+     * restart the boot CPU without tearing down host-backed resources: the NOR
+     * flash (UEFI variable store), fw_cfg payloads, open -drive images and the
+     * slirp network all persist across the reboot, matching real hardware.
+     * virtio-blk/9p need no explicit reset here — the rebooting firmware/OS
+     * resets each through the virtio STATUS=0 probe handshake before first use;
+     * virtio-net is quiesced because it is polled in the background. */
+    if (m->gic)   gic_reset(m->gic);
+    if (m->uart)  pl011_reset(m->uart);
+    if (m->rtc)   pl031_reset(m->rtc);
+    if (m->fwcfg) fwcfg_reset(m->fwcfg);
+    if (m->net)   virtio_net_reset(m->net);
+    flash_cfi_reset(m);
+
+    /* Re-place the flattened device tree at the base of RAM (EDK2 reads it from
+     * PcdDeviceTreeInitialBaseAddress): the previous OS reused that memory. Only
+     * when a platform was actually built — a raw -bin run has no fw_cfg/DTB. */
+    if (m->fwcfg) phys_write_blk(m, RAM_BASE, virt_dtb, virt_dtb_len);
+
+    cpu_reset(&m->cpu, entry, reset_el);
+}
+
 void machine_tick(Machine *m) {
     if (m->timer) timer_update(m);
     if (m->uart) pl011_rx_poll(m);

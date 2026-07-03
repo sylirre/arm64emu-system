@@ -111,6 +111,9 @@ typedef struct Machine {
 
 void machine_init(Machine *m, u64 ram_size);
 void machine_free(Machine *m);
+
+/* Return the NOR flash CFI command state machine to read-array/ready (reset). */
+void flash_cfi_reset(Machine *m);
 void machine_add_device(Machine *m, u64 base, u64 size, mmio_read_fn r,
                         mmio_write_fn w, void *opaque, const char *name);
 

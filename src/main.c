@@ -27,6 +27,7 @@ void platform_setup_boot(Machine *m, const char *kernel, const char *initrd,
                          const char *append) __attribute__((weak));
 void machine_wait_for_event(Machine *m) __attribute__((weak));
 void machine_tick(Machine *m) __attribute__((weak));
+void machine_reset(Machine *m, u64 entry, unsigned reset_el) __attribute__((weak));
 
 static u8 *read_file(const char *path, size_t *len_out) {
     FILE *f = fopen(path, "rb");
@@ -240,7 +241,17 @@ int main(int argc, char **argv) {
     for (;;) {
         if (machine_tick && (++ticker & tick_mask) == 0) machine_tick(&m);
         StepResult r = cpu_step(&m.cpu);
-        if (r == STEP_HALT) break;
+        if (r == STEP_HALT) {
+            if (m.cpu.reset && machine_reset) {   /* PSCI SYSTEM_RESET: warm reboot */
+                machine_reset(&m, entry, (unsigned)reset_el);
+                /* machine_reset restores the built-in DTB; re-apply file-based
+                 * overrides that live in RAM, which the previous OS reused. */
+                if (dtbfile) { size_t n; u8 *d = read_file(dtbfile, &n); phys_write_blk(&m, RAM_BASE, d, n); free(d); }
+                if (binfile) { size_t n; u8 *b = read_file(binfile, &n); phys_write_blk(&m, bin_addr, b, n); free(b); }
+                continue;
+            }
+            break;
+        }
         if (m.cpu.halted) {
             if (!machine_wait_for_event) break;
             machine_wait_for_event(&m);
