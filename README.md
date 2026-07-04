@@ -35,13 +35,19 @@ make test                  # runs the assembly self-tests
 ./arm64emu -bios .../QEMU_EFI.fd -kernel Image -initrd initramfs \
            -virtfs /path/to/project,tag=proj \
            -virtfs /srv/data,tag=data,ro
+
+# virtio-console on hvc0, so the guest terminal size tracks the host window:
+./arm64emu -bios .../QEMU_EFI.fd -kernel Image -initrd initramfs \
+           -console virtio \
+           -append "console=hvc0 earlycon=pl011,0x9000000"
 ```
 
 Useful flags: `-m <MB>` RAM size, `-dtb FILE` supply a device tree,
 `-drive IMG[,ro]` attach a virtio-blk disk (repeatable; `ro` opens the image
 read-only and advertises VIRTIO_BLK_F_RO), `-net` user-mode
 networking, `-virtfs DIR[,tag=TAG][,ro]` share a host directory over virtio-9p
-(repeatable), `-bin FILE@ADDR` load a flat binary (bare-metal tests), `-d`
+(repeatable), `-console pl011|virtio` pick the console device (default `pl011`),
+`-bin FILE@ADDR` load a flat binary (bare-metal tests), `-d`
 per-instruction trace, `-rt` register trace, `-maxinsn N` stop after N
 instructions.
 
@@ -59,6 +65,21 @@ The guest kernel needs 9p-over-virtio support (`CONFIG_NET_9P`,
 `CONFIG_NET_9P_VIRTIO`, `CONFIG_9P_FS`, plus `virtio_mmio`) built in or as
 loadable modules. `..` is confined to the share root; symlinks inside a share
 are followed by the host, so a share is a convenience, not a security boundary.
+
+**Console (`-console pl011|virtio`).** The default `pl011` is the PL011 UART
+(`ttyAMA0`): a byte-pipe serial line, unchanged and fully deterministic.
+`-console virtio` additionally attaches a **virtio-console** on its own
+virtio-mmio slot, exposed to the guest as `hvc0`. It advertises
+`VIRTIO_CONSOLE_F_SIZE`, so the guest terminal size follows the host window
+automatically — the initial columns/rows and every later host resize (SIGWINCH)
+are propagated, and full-screen programs (`vi`, `less`, `top`) redraw without a
+manual `resize`. Boot with `console=hvc0` to move `/dev/console` there (keep
+`earlycon=pl011,0x9000000` for early-boot output before the driver probes; the
+PL011 stays live as `ttyAMA0`). The guest kernel needs `CONFIG_VIRTIO_CONSOLE`
+(with `CONFIG_HVC_DRIVER`) built in or in the initramfs. Until the guest driver
+is up — firmware menus, early boot — keyboard input stays on the PL011, so UEFI
+menus still work. Note that host resize events make `virtio` mode as
+non-deterministic as any keyboard input; the default `pl011` path is untouched.
 
 Debug/bring-up env vars (all off by default, no runtime cost when unset):
 `AEDBG=N` device/IRQ + fw_cfg/flash logging, `AEPROF=1` hot-PC profiler,
@@ -80,8 +101,8 @@ src/
   exception.c   exception entry/return (VBAR vectors, ESR/FAR/ELR/SPSR, ERET)
   memory.c      physical bus: RAM + NOR-flash CFI command set + MMIO dispatch
   tty.c         raw-terminal serial console via termios
-  devices/      gicv2, timer, pl011, pl031, psci, fwcfg,
-                virtio_blk (-drive), virtio_net (-net), virtio_9p (-virtfs)
+  devices/      gicv2, timer, pl011, pl031, psci, fwcfg, virtio_blk (-drive),
+                virtio_net (-net), virtio_9p (-virtfs), virtio_console (-console)
   fdt/virt.dts  device tree (QEMU virt tree; compiled to virt_dtb.h, embedded)
 tests/          self-checking assembly tests + QEMU differential helpers
 ```
@@ -140,8 +161,9 @@ an exception-return bug (instruction-abort ELR pointing at the wrong PC).
   **performance** is ~40 MIPS, so a full distro boot is slow (see *Performance
   notes* below for why a decoded-instruction cache did **not** help).
 - **Devices**: **virtio-blk** (`-drive`, disk-backed rootfs), **virtio-net**
-  (`-net`, user-mode NAT via libslirp), and **virtio-9p** (`-virtfs`, host
-  directory sharing) are implemented over virtio-mmio, alongside the fw_cfg
+  (`-net`, user-mode NAT via libslirp), **virtio-9p** (`-virtfs`, host
+  directory sharing), and **virtio-console** (`-console virtio`, host-tracking
+  `hvc0` terminal size) are implemented over virtio-mmio, alongside the fw_cfg
   initramfs rootfs.
 
 These are incremental extensions along the path already established. The hard

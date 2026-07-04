@@ -48,7 +48,7 @@ static void usage(const char *p) {
     fprintf(stderr,
         "usage: %s [-bios FW.fd] [-kernel Image] [-initrd cpio] [-append CMDLINE]\n"
         "          [-drive IMG[,ro] (repeatable)] [-net] [-netfwd tcp|udp:HOST_PORT:GUEST_PORT]\n"
-        "          [-virtfs DIR[,tag=TAG][,ro] (repeatable)]\n"
+        "          [-virtfs DIR[,tag=TAG][,ro] (repeatable)] [-console pl011|virtio]\n"
         "          [-m MB] [-bin FLAT@ADDR] [-entry ADDR] [-el N] [-d] [-maxinsn N]\n", p);
 }
 
@@ -68,6 +68,7 @@ int main(int argc, char **argv) {
     Drive drives[MAX_DRIVES]; int n_drives = 0;
     VirtFS shares[MAX_SHARES]; int n_shares = 0;
     bool net_enabled = false;
+    bool console_virtio = false;         /* -console: false=pl011 (default), true=virtio */
     NetFwd net_fwds[16]; int n_net_fwds = 0;
     u64 ram_mb = 1024;
     u64 entry = 0;
@@ -153,6 +154,12 @@ int main(int argc, char **argv) {
             n_shares++;
         }
         else if (!strcmp(argv[i], "-net")) net_enabled = true;
+        else if (!strcmp(argv[i], "-console") && i + 1 < argc) {
+            const char *k = argv[++i];
+            if      (!strcmp(k, "pl011"))  console_virtio = false;
+            else if (!strcmp(k, "virtio")) console_virtio = true;
+            else { fprintf(stderr, "-console: expected pl011|virtio\n"); return 1; }
+        }
         else if (!strcmp(argv[i], "-netfwd") && i + 1 < argc) {
             /* Format: tcp:HOST_PORT:GUEST_PORT or udp:HOST_PORT:GUEST_PORT */
             if (n_net_fwds >= 16) { fprintf(stderr, "too many -netfwd rules\n"); return 1; }
@@ -199,6 +206,10 @@ int main(int argc, char **argv) {
     if (n_drives) { memcpy(m.drives, drives, n_drives * sizeof(drives[0])); m.n_drives = n_drives; }
     if (n_shares) { memcpy(m.shares, shares, n_shares * sizeof(shares[0])); m.n_shares = n_shares; }
     m.net_enabled = net_enabled;
+    m.console_virtio = console_virtio;
+    if (console_virtio)
+        fprintf(stderr, "[virtio-console] guest console is hvc0 — "
+                        "boot with -append \"console=hvc0\"\n");
     if (n_net_fwds) { memcpy(m.net_fwds, net_fwds, n_net_fwds * sizeof(NetFwd)); m.n_net_fwds = n_net_fwds; }
 
     if (bios) {
