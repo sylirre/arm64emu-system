@@ -97,10 +97,14 @@ Getting the login onto hvc0 depends on how you boot:
   override a `console=` baked into it. The Alpine ISO uses
   `console=tty0 console=ttyAMA0`, so its login is on `ttyAMA0` — you can still type
   (input follows it). To move the login to hvc0, edit the GRUB entry at the menu:
-  press `e`, go to the `linux` line, append ` console=hvc0` (last `console=` wins),
-  then `Ctrl-X` to boot. (Booting a *live* ISO's kernel directly via `-kernel`
-  won't work — its initramfs assembles the root overlay only under its own GRUB
-  boot, so a direct `-kernel` boot panics at `switch_root`.)
+  press `e`, go to the `linux` line, and **append** ` console=hvc0` at the end
+  (last `console=` wins), then `Ctrl-X` to boot. Keep the existing
+  `console=ttyAMA0` — *append*, don't replace it: the live ISO's boot-media
+  discovery relies on it, and dropping it makes early init fail (`switch_root:
+  can't execute '/sbin/init'`). For the same reason, booting a live ISO's kernel
+  directly via `-kernel` won't work — its root overlay is assembled only under its
+  own GRUB boot. (An installed system with a normal root filesystem has neither
+  restriction: just use the `-kernel` path, where `console=hvc0` is auto-added.)
 
 Note that host resize events make `virtio` mode as non-deterministic as any
 keyboard input; the default `pl011` path is untouched.
