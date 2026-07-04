@@ -26,8 +26,14 @@ for src in "$ASM"/*.S; do
         echo "FAIL $name (assemble)"; cat "$OUT/err"; fail=$((fail+1)); continue
     fi
     "$OBJCOPY" -O binary "$elf" "$bin"
-    # Run; capture the HLT line "x0=0x..."
-    res="$("$EMU" -bin "$bin@$LOAD" -maxinsn 100000 2>&1 | grep -oE 'x0=0x[0-9a-f]+' | head -1)"
+    # Run; capture the HLT line "x0=0x...". Most tests load as a flat -bin image;
+    # the virtio-console probe needs the platform (virtio devices exist only when
+    # platform_build runs), so run it as firmware with -console virtio instead.
+    case "$name" in
+        *_vcon) run=("$EMU" -bios "$bin" -console virtio -maxinsn 100000) ;;
+        *)      run=("$EMU" -bin "$bin@$LOAD" -maxinsn 100000) ;;
+    esac
+    res="$("${run[@]}" 2>&1 | grep -oE 'x0=0x[0-9a-f]+' | head -1)"
     if [ "$res" = "x0=0x0" ]; then
         echo "PASS $name"; pass=$((pass+1))
     else
