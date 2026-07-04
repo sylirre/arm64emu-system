@@ -57,6 +57,7 @@ typedef struct VirtIOConsole {
 
     uint8_t  rx_fifo[RX_FIFO_SIZE];
     int      rx_head, rx_tail;       /* circular; head == tail => empty */
+    bool     size_synced;            /* fired the initial config-change IRQ yet? */
 } VirtIOConsole;
 
 /* ---- helpers ---- */
@@ -80,8 +81,25 @@ static void con_reset(VirtIOConsole *v) {
         v->last_avail[q] = 0;
     }
     v->rx_head = v->rx_tail = 0;      /* drop type-ahead queued for the old driver */
+    v->size_synced = false;
     con_update_winsize(v);           /* a warm reboot starts with the current size */
     gic_set_irq(v->gic, v->irq, 0);
+}
+
+/* Apply the initial hvc0 window size. The non-multiport virtio_console driver
+ * only picks up cols/rows from config on a config-change interrupt (and on some
+ * kernels not at all until one arrives), so once the driver and its console port
+ * are up (DRIVER_OK + RX queue ready) we raise exactly one config-change IRQ with
+ * a fresh winsize. Idempotent (guarded by size_synced). */
+static void con_sync_size(VirtIOConsole *v) {
+    if (v->size_synced) return;
+    if (!(v->status & VIRTIO_STATUS_DRIVER_OK) || !v->q_ready[CON_QUEUE_RX]) return;
+    v->size_synced = true;
+    con_update_winsize(v);
+    v->isr |= 2;                      /* VIRTIO_MMIO_INT_CONFIG */
+    gic_set_irq(v->gic, v->irq, 1);
+    if (getenv("AEVCON"))
+        fprintf(stderr, "[vcon] initial size sync: %ux%u\n", v->cols, v->rows);
 }
 
 /* System-reset entry point: identical to a guest-driven STATUS=0 device reset.
@@ -227,6 +245,8 @@ static void con_tx_process(VirtIOConsole *v) {
 /* ---- background poll (machine_tick): host input + winsize ---- */
 
 void virtio_console_poll(VirtIOConsole *v) {
+    con_sync_size(v);                          /* apply the initial hvc0 size once */
+
     /* Host terminal resized? Update config geometry and raise a config-change
      * interrupt (ISR bit 1) so the guest re-reads config, resizes hvc0, and
      * delivers SIGWINCH to the foreground process. */
@@ -309,13 +329,19 @@ static void con_write(void *opaque, u64 off, unsigned size, u64 val) {
             break;
         case 0x050:                                     /* QueueNotify: val = queue index */
             if (v32 == CON_QUEUE_TX) con_tx_process(v);
-            else if (v32 == CON_QUEUE_RX) con_flush_rx(v); /* guest added free buffers */
+            else if (v32 == CON_QUEUE_RX) {
+                con_flush_rx(v);      /* guest added free buffers */
+                con_sync_size(v);     /* console port is up -> apply initial size */
+            }
             break;
         case 0x064:
             v->isr &= ~v32;                             /* clears bit 0 and/or bit 1 */
             if (v->isr == 0) gic_set_irq(v->gic, v->irq, 0);
             break;
         case 0x070:
+            /* Note: DRIVER_OK is set before the driver creates the console port,
+             * so the initial size sync is deferred to the first RX-queue notify
+             * (con_sync_size in case 0x050) / poll, once the port exists. */
             if (v32 == 0) con_reset(v); else v->status = v32;
             break;
         /* Queue descriptor/available/used table addresses (low/high 32-bit pairs). */
