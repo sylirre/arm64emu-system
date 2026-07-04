@@ -73,13 +73,37 @@ virtio-mmio slot, exposed to the guest as `hvc0`. It advertises
 `VIRTIO_CONSOLE_F_SIZE`, so the guest terminal size follows the host window
 automatically — the initial columns/rows and every later host resize (SIGWINCH)
 are propagated, and full-screen programs (`vi`, `less`, `top`) redraw without a
-manual `resize`. Boot with `console=hvc0` to move `/dev/console` there (keep
-`earlycon=pl011,0x9000000` for early-boot output before the driver probes; the
-PL011 stays live as `ttyAMA0`). The guest kernel needs `CONFIG_VIRTIO_CONSOLE`
-(with `CONFIG_HVC_DRIVER`) built in or in the initramfs. Until the guest driver
-is up — firmware menus, early boot — keyboard input stays on the PL011, so UEFI
-menus still work. Note that host resize events make `virtio` mode as
-non-deterministic as any keyboard input; the default `pl011` path is untouched.
+manual `resize`. The guest kernel needs `CONFIG_VIRTIO_CONSOLE` (with
+`CONFIG_HVC_DRIVER`) built in or in the initramfs.
+
+For the resize feature to reach your shell, the guest's **interactive console must
+be `hvc0`** — i.e. the kernel must boot with `console=hvc0`. There are two host
+consoles sharing one terminal (the PL011 for firmware/GRUB/`earlycon`, and hvc0
+for the OS), so host keystrokes are routed to **whichever console last produced
+output** ("input follows output"): firmware and GRUB menus stay on the PL011, and
+once the guest writes its console to hvc0 your typing (and the window size) follow
+there. This means `-console virtio` never leaves you unable to type, wherever the
+guest's login ends up.
+
+Getting the login onto hvc0 depends on how you boot:
+
+- **`-kernel` path**: the emulator adds `console=hvc0` to the kernel cmdline for you
+  when `-console virtio` is set, so the login lands on hvc0 with no extra flags
+  (keep `earlycon=pl011,0x9000000` for early output before the driver probes). This
+  works for a guest that has its own root filesystem (an installed disk image, or a
+  kernel+initramfs that mounts a real root).
+- **`-drive` ISO / GRUB boot** (e.g. the stock Alpine live ISO): the kernel cmdline
+  comes from the ISO's bootloader, not from `-append`, and the emulator can't
+  override a `console=` baked into it. The Alpine ISO uses
+  `console=tty0 console=ttyAMA0`, so its login is on `ttyAMA0` — you can still type
+  (input follows it). To move the login to hvc0, edit the GRUB entry at the menu:
+  press `e`, go to the `linux` line, append ` console=hvc0` (last `console=` wins),
+  then `Ctrl-X` to boot. (Booting a *live* ISO's kernel directly via `-kernel`
+  won't work — its initramfs assembles the root overlay only under its own GRUB
+  boot, so a direct `-kernel` boot panics at `switch_root`.)
+
+Note that host resize events make `virtio` mode as non-deterministic as any
+keyboard input; the default `pl011` path is untouched.
 
 Debug/bring-up env vars (all off by default, no runtime cost when unset):
 `AEDBG=N` device/IRQ + fw_cfg/flash logging, `AEPROF=1` hot-PC profiler,

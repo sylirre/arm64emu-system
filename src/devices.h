@@ -49,6 +49,7 @@ u64  timer_next_deadline_ticks(Machine *m);  /* instructions until next fire, or
 
 /* ---- PL011 UART ---- */
 typedef struct PL011 {
+    Machine *m;                    /* for the input-follows-output active flag */
     GIC *gic;
     u32 imsc, ris;
     u8  rx_fifo[64]; int rx_head, rx_tail;

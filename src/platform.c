@@ -134,11 +134,13 @@ void machine_reset(Machine *m, u64 entry, unsigned reset_el) {
 
 void machine_tick(Machine *m) {
     if (m->timer) timer_update(m);
-    /* Route host keyboard input dynamically: while the guest's virtio-console
-     * driver is up, stdin (and host winsize) feed hvc0; before that — firmware,
-     * early boot, or plain pl011 mode — it feeds the PL011 UART. Output needs no
-     * routing: both write to the same stdout and the guest drives only one. */
-    if (m->console_virtio && m->vcon && vcon_driver_ok(m->vcon))
+    /* Route host keyboard input to the console the guest is actually using:
+     * "input follows output". console_active_virtio tracks which console last
+     * produced output (set on each device's TX). So firmware/GRUB/earlycon and a
+     * ttyAMA0 login keep input on the PL011 UART, while once the guest writes its
+     * console to hvc0 (e.g. console=hvc0) input — and host winsize — follow there.
+     * Output needs no routing: both write to the same stdout, guest drives one. */
+    if (m->console_virtio && m->vcon && vcon_driver_ok(m->vcon) && m->console_active_virtio)
         virtio_console_poll(m->vcon);
     else if (m->uart)
         pl011_rx_poll(m);

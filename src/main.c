@@ -207,9 +207,26 @@ int main(int argc, char **argv) {
     if (n_shares) { memcpy(m.shares, shares, n_shares * sizeof(shares[0])); m.n_shares = n_shares; }
     m.net_enabled = net_enabled;
     m.console_virtio = console_virtio;
-    if (console_virtio)
-        fprintf(stderr, "[virtio-console] guest console is hvc0 — "
-                        "boot with -append \"console=hvc0\"\n");
+    if (console_virtio) {
+        if (kernel) {
+            /* We control the cmdline on the -kernel path: make hvc0 the guest
+             * console (last console= wins) so the login lands on hvc0 and host
+             * I/O is effectively exclusive to the virtio-console. Skipped if the
+             * user already asked for it. (A -drive ISO/GRUB boot ignores -append,
+             * so the guest bootloader must set console=hvc0 itself.) */
+            if (!strstr(append, "console=hvc0")) {
+                static char append_hvc0[2048];
+                snprintf(append_hvc0, sizeof append_hvc0, "%s%sconsole=hvc0", append,
+                         (append[0] && append[strlen(append) - 1] != ' ') ? " " : "");
+                append = append_hvc0;
+            }
+            fprintf(stderr, "[virtio-console] guest console -> hvc0 "
+                            "(console=hvc0 added to the kernel cmdline)\n");
+        } else {
+            fprintf(stderr, "[virtio-console] guest console is hvc0 — set "
+                            "console=hvc0 in the guest bootloader (e.g. GRUB) to use it\n");
+        }
+    }
     if (n_net_fwds) { memcpy(m.net_fwds, net_fwds, n_net_fwds * sizeof(NetFwd)); m.n_net_fwds = n_net_fwds; }
 
     if (bios) {

@@ -216,6 +216,9 @@ static void con_tx_process(VirtIOConsole *v) {
     }
 
     if (did) {
+        /* The guest is writing its console output to hvc0 -> host input should
+         * follow it here (rather than to ttyAMA0). See machine_tick. */
+        v->m->console_active_virtio = true;
         v->isr |= 1;
         gic_set_irq(v->gic, v->irq, 1);
     }

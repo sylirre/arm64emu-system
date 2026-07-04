@@ -106,6 +106,10 @@ typedef struct Machine {
     int    n_shares;
     bool net_enabled;             /* -net flag */
     bool console_virtio;          /* -console virtio (default false = pl011) */
+    bool console_active_virtio;   /* input follows output: true once hvc0 (not
+                                   * ttyAMA0) last produced output; routes host
+                                   * stdin to the console the guest is actually
+                                   * using. Only consulted when console_virtio. */
     NetFwd net_fwds[16];          /* -netfwd rules */
     int    n_net_fwds;
 

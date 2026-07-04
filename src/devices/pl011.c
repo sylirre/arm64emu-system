@@ -68,7 +68,13 @@ static u64 uart_read(void *opaque, u64 off, unsigned size) {
 static void uart_write(void *opaque, u64 off, unsigned size, u64 val) {
     PL011 *p = opaque;
     switch (off) {
-        case 0x00: tty_putchar((int)(val & 0xff)); update_irq(p); break;   /* DR */
+        case 0x00:                                                        /* DR */
+            tty_putchar((int)(val & 0xff));
+            /* Output on the serial console -> host input follows it back to
+             * ttyAMA0 (until the guest next writes to hvc0). See machine_tick. */
+            if (p->m->console_virtio) p->m->console_active_virtio = false;
+            update_irq(p);
+            break;
         case 0x24: p->ibrd = (u32)val; break;
         case 0x28: p->fbrd = (u32)val; break;
         case 0x2c: p->lcr_h = (u32)val; break;
@@ -82,6 +88,7 @@ static void uart_write(void *opaque, u64 off, unsigned size, u64 val) {
 
 PL011 *pl011_create(Machine *m, GIC *gic) {
     PL011 *p = calloc(1, sizeof(*p));
+    p->m = m;
     p->gic = gic;
     p->cr = 0x300;     /* TXE|RXE */
     machine_add_device(m, UART_BASE, 0x1000, uart_read, uart_write, p, "pl011");
@@ -92,8 +99,10 @@ PL011 *pl011_create(Machine *m, GIC *gic) {
 /* Return the UART to power-on state (system reset): drop masks, the RX FIFO
  * (any type-ahead), and the pending interrupt; keeps the GIC backpointer. */
 void pl011_reset(PL011 *p) {
+    Machine *m = p->m;
     GIC *gic = p->gic;
     memset(p, 0, sizeof(*p));
+    p->m = m;
     p->gic = gic;
     p->cr = 0x300;     /* TXE|RXE */
     gic_set_irq(gic, INTID_UART, 0);
