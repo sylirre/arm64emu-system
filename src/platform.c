@@ -68,9 +68,9 @@ void platform_build(Machine *m) {
      * because find_dev uses first-match dispatch — so a device at slot 2+ shadows
      * the catch-all stub below for its own 0x200 window.
      * Unoccupied slots get empty-transport stubs (DeviceID=0). */
-    if (m->n_drives + m->n_shares > 31) {   /* net=slot0, then disks, then shares */
-        fprintf(stderr, "too many virtio-mmio devices (%d disks + %d shares > 31 slots)\n",
-                m->n_drives, m->n_shares);
+    if (m->n_drives + m->n_shares + (m->console_virtio ? 1 : 0) > 31) {   /* net=slot0, then disks, shares, console */
+        fprintf(stderr, "too many virtio-mmio devices (%d disks + %d shares%s > 31 slots)\n",
+                m->n_drives, m->n_shares, m->console_virtio ? " + console" : "");
         exit(1);
     }
     if (m->net_enabled) virtio_net_create(m, m->gic);
@@ -79,8 +79,12 @@ void platform_build(Machine *m) {
     for (int i = 0; i < m->n_shares; i++)                    /* slots after disks  */
         virtio_9p_create(m, m->gic, m->shares[i].path, m->shares[i].tag,
                          m->shares[i].ro, m->n_drives + 1 + i);
+    if (m->console_virtio)                                   /* slot after disks + shares */
+        virtio_console_create(m, m->gic, 1 + m->n_drives + m->n_shares);
     if (!m->net_enabled) machine_add_device(m, 0x0a000000, 0x200, virtio_mmio_read, stub_write, m, "virtio-mmio");
-    if (m->n_drives == 0 && m->n_shares == 0) machine_add_device(m, 0x0a000200, 0x200, virtio_mmio_read, stub_write, m, "virtio-mmio");
+    /* Slot 1 (0x0a000200) is stubbed only when nothing real occupies it — no
+     * disk, no share, and (when there are neither) no virtio-console either. */
+    if (m->n_drives == 0 && m->n_shares == 0 && !m->console_virtio) machine_add_device(m, 0x0a000200, 0x200, virtio_mmio_read, stub_write, m, "virtio-mmio");
     machine_add_device(m, 0x0a000400, 0x3c00, virtio_mmio_read, stub_write, m, "virtio-mmio");
     machine_add_device(m, 0x3eff0000, 0x10000,      stub_ones_read, stub_write, m, "pcie-pio");
     machine_add_device(m, 0x10000000, 0x2eff0000,   stub_ones_read, stub_write, m, "pcie-mmio");
@@ -117,6 +121,7 @@ void machine_reset(Machine *m, u64 entry, unsigned reset_el) {
     if (m->rtc)   pl031_reset(m->rtc);
     if (m->fwcfg) fwcfg_reset(m->fwcfg);
     if (m->net)   virtio_net_reset(m->net);
+    if (m->vcon)  virtio_console_reset(m->vcon);   /* background-polled: quiesce explicitly */
     flash_cfi_reset(m);
 
     /* Re-place the flattened device tree at the base of RAM (EDK2 reads it from
@@ -129,7 +134,14 @@ void machine_reset(Machine *m, u64 entry, unsigned reset_el) {
 
 void machine_tick(Machine *m) {
     if (m->timer) timer_update(m);
-    if (m->uart) pl011_rx_poll(m);
+    /* Route host keyboard input dynamically: while the guest's virtio-console
+     * driver is up, stdin (and host winsize) feed hvc0; before that — firmware,
+     * early boot, or plain pl011 mode — it feeds the PL011 UART. Output needs no
+     * routing: both write to the same stdout and the guest drives only one. */
+    if (m->console_virtio && m->vcon && vcon_driver_ok(m->vcon))
+        virtio_console_poll(m->vcon);
+    else if (m->uart)
+        pl011_rx_poll(m);
     if (m->net) virtio_net_poll(m->net);
 }
 

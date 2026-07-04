@@ -42,6 +42,7 @@ struct ARMTimer;
 struct VirtIOBlk;
 struct VirtIONet;
 struct VirtIO9P;
+struct VirtIOConsole;
 
 typedef struct NetFwd {
     bool is_udp;
@@ -97,12 +98,14 @@ typedef struct Machine {
     struct VirtIONet *net;
     struct VirtIO9P  *fs[MAX_SHARES];   /* attached 9p shares, in attach order */
     int    n_fs;
+    struct VirtIOConsole *vcon;         /* -console virtio (hvc0), else NULL */
 
     Drive  drives[MAX_DRIVES];   /* -drive disks */
     int    n_drives;
     VirtFS shares[MAX_SHARES];    /* -virtfs host directory shares */
     int    n_shares;
     bool net_enabled;             /* -net flag */
+    bool console_virtio;          /* -console virtio (default false = pl011) */
     NetFwd net_fwds[16];          /* -netfwd rules */
     int    n_net_fwds;
 
