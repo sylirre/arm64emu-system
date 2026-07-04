@@ -6,10 +6,16 @@
 #include <fcntl.h>
 #include <termios.h>
 #include <signal.h>
+#include <sys/ioctl.h>
+#include <errno.h>
 
 static struct termios saved_tio;
 static int raw_active = 0;
 static int stdin_flags = 0;
+
+/* Set by on_winch (async-signal-safe: touches only this flag). Consumed by
+ * tty_take_winch(); a console device re-reads the winsize when it fires. */
+static volatile sig_atomic_t winch_pending = 0;
 
 void tty_raw_disable(void) {
     if (!raw_active) return;
@@ -24,6 +30,10 @@ static void on_signal(int sig) {
     signal(sig, SIG_DFL);
     raise(sig);
 }
+
+/* SIGWINCH: host terminal was resized. Only latch a flag — the winsize is
+ * re-read later on the run loop's thread (ioctl is not async-signal-safe). */
+static void on_winch(int sig) { (void)sig; winch_pending = 1; }
 
 void tty_raw_enable(void) {
     if (!isatty(STDIN_FILENO)) return;
@@ -47,6 +57,7 @@ void tty_raw_enable(void) {
     atexit(tty_raw_disable);
     signal(SIGTERM, on_signal);
     signal(SIGSEGV, on_signal);
+    signal(SIGWINCH, on_winch);   /* host resize -> winch_pending (virtio-console) */
 }
 
 int tty_getchar(void) {
@@ -73,4 +84,29 @@ int tty_getchar(void) {
 void tty_putchar(int ch) {
     unsigned char c = (unsigned char)ch;
     if (write(STDOUT_FILENO, &c, 1) < 0) { /* ignore */ }
+}
+
+void tty_write(const void *buf, size_t len) {
+    const unsigned char *p = buf;
+    while (len) {
+        ssize_t n = write(STDOUT_FILENO, p, len);
+        if (n < 0) { if (errno == EINTR) continue; break; }  /* drop on error */
+        p += n; len -= (size_t)n;
+    }
+}
+
+void tty_get_winsize(unsigned short *cols, unsigned short *rows) {
+    struct winsize ws;
+    if (isatty(STDOUT_FILENO) && ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
+        *cols = ws.ws_col;
+        *rows = ws.ws_row;
+    } else {
+        *cols = 0;                 /* unknown geometry, like a serial line */
+        *rows = 0;
+    }
+}
+
+int tty_take_winch(void) {
+    if (winch_pending) { winch_pending = 0; return 1; }
+    return 0;
 }
