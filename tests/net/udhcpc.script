@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sylirre
 # Minimal udhcpc event script for the network test guest.
 case "$1" in
 bound|renew)

@@ -1,4 +1,6 @@
 #!/bin/busybox sh
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sylirre
 # Network test-guest /init for arm64emu. Built into an initramfs by
 # mk_guest_initrd.sh; the phase to run comes from aetest= on the kernel
 # cmdline (aearg= is an optional argument, usually a host port).

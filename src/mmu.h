@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* Virtual memory translation + typed guest memory access.
  * M0/M1: flat (MMU off). M2 extends mmu_translate for SCTLR.M=1. */
 #ifndef A64_MMU_H

@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sylirre
 # End-to-end network smoke test for the usernet backend (-net).
 #
 # Boots a BusyBox test guest (see tests/net/) against a host-local HTTP

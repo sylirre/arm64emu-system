@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* QEMU fw_cfg device (MMIO), with both the data-port and DMA interfaces.
  * EDK2 reads the kernel/initrd/cmdline through this. */
 #include "../devices.h"

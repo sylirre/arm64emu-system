@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* virtio-blk over a modern (version 2) virtio-mmio transport, slot 0 of QEMU's
  * 'virt' map (0x0a000000, INTID 48 / SPI 16, edge-triggered per the DTB).
  *

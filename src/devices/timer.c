@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* ARM architected generic timer.
  *
  * By default the counter is driven by the retired-instruction count, NOT the

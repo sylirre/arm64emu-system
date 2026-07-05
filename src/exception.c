@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* Exception entry/return. All exceptions are routed to EL1 (we model EL0/EL1). */
 #include "cpu.h"
 #include <stdio.h>

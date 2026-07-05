@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* M1 integer interpreter self-test.
  * On success: x0 = 0, HLT.  On failure: x0 = <check id>, HLT.
  * Each CK sets x11 = id; on mismatch we branch to `fail` which moves x11->x0. */

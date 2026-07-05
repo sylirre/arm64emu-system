@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* PL011 UART: TX -> host stdout, RX <- host stdin, with RX/TX interrupts. */
 #include "../devices.h"
 #include "../tty.h"

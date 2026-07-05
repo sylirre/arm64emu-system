@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* PL031 real-time clock (minimal: host wall-clock seconds, or a fixed epoch in
  * deterministic mode). The host clock is the last non-reproducible input into
  * the guest, so by default (deterministic, !g_rtclock) we return a fixed base

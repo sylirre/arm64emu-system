@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* Platform wiring: instantiate virt devices, place the DTB, load the kernel
  * via fw_cfg, and drive timer/UART events for the run loop. */
 #include "devices.h"

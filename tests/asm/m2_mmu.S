@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* M2 test: enable the MMU (4 KB granule, 1 GB blocks), access memory via VA,
  * and take/return an SVC exception. x0=0 on success, else failing-check id. */
 

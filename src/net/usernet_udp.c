@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* usernet UDP: the built-in DHCP server, the NAT flow table, and the DNS
  * redirect (guest 10.0.2.3:53 -> the host's real resolver). */
 #include "usernet_priv.h"

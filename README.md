@@ -235,3 +235,16 @@ experiment isn't blindly repeated:
   `switch`, so a hit skips operand extraction too, not just classification. That,
   or accepting the current speed, is the path forward; a function-pointer decode
   cache is not.
+
+## License
+
+**Apache License 2.0** — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+arm64emu is original, clean-room code (C11, libc/POSIX only) and shares no
+source with QEMU, EDK2, or the Linux kernel; it interoperates with them purely
+through their public hardware/software interfaces. EDK2 firmware and Linux
+kernel/initramfs images are supplied by you at runtime and are neither bundled
+nor distributed here. Apache-2.0 was chosen for its permissive terms plus an
+explicit patent grant. Each source file carries an `SPDX-License-Identifier:
+Apache-2.0` tag; `src/fdt/virt.dts` is QEMU-generated device-tree data and is
+exempt (see NOTICE).

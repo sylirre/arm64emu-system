@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* virtio-9p host directory share over a modern (version 2) virtio-mmio
  * transport. Exports a host directory tree into the guest as a 9P2000.L
  * filesystem; the guest mounts it with

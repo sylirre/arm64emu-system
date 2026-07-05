@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* GICv2: distributor (GICD) + CPU interface (GICC). Single CPU. */
 #include "../devices.h"
 #include <stdlib.h>

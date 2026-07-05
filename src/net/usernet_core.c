@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* usernet core: API entry points, Ethernet/ARP/IPv4 handling, ICMP echo,
  * frame emission, poll driver, pcap capture (AENET_PCAP=<file>) and stats
  * (AENET_STATS=1). Protocol proxies live in usernet_udp.c / usernet_tcp.c. */

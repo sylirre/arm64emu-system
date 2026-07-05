@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* Raw terminal handling for the serial console (host stdin/stdout). */
 #ifndef A64_TTY_H
 #define A64_TTY_H

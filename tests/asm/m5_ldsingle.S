@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* M5 AdvSIMD single-structure load/store self-test: LD1R/LD2R (replicate),
  * single-lane LD1, and single-lane ST1 round-trip. Expected values cross-checked
  * against qemu-system-aarch64. x0=0 on success, else failing-check id. */

@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* M7 crypto self-test: REV16/32/64 + ARMv8 SHA-1/SHA-256/AES extensions.
  * x0=0 on success, else failing-check id. Reference values are independent
  * (Python hashlib / FIPS-197 reference). */

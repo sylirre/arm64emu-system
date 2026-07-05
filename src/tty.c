@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* Raw terminal handling using POSIX termios (no external deps). */
 #include "tty.h"
 #include <stdio.h>

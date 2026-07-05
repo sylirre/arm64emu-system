@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sylirre
 # Build and run the assembly self-tests against the emulator.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

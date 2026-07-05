@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* M4 FP/SIMD self-test: MOVI/MVNI/DUP/INS/UMOV/SMOV + vector load/store.
  * x0=0 on success, else failing-check id. */
 .macro CKX reg, val, id

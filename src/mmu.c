@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* AArch64 stage-1 address translation (EL1&0 regime, 4 KB granule) with a
  * software TLB, plus typed guest memory accesses. */
 #include "mmu.h"

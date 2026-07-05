@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* virtio-console over modern (version 2) virtio-mmio transport.
  *
  * DeviceID 3, non-multiport (we do NOT advertise VIRTIO_CONSOLE_F_MULTIPORT),

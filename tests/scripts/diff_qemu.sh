@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sylirre
 # Differential trace harness: run a flat binary under QEMU (the oracle) and under
 # our emulator, then diff the per-instruction PC stream to find the first
 # divergence. Used during M4 firmware bring-up. QEMU is a *development* tool only.

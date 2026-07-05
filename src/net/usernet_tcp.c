@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* usernet TCP: terminating proxy between synthesized guest-side TCP and
  * nonblocking host sockets.
  *

@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* Platform device interfaces (QEMU 'virt', GICv2). */
 #ifndef A64_DEVICES_H
 #define A64_DEVICES_H

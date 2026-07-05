@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* Physical memory bus: RAM, flash, and MMIO device dispatch. */
 #include "machine.h"
 #include <stdlib.h>

@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* usernet internals shared between usernet_core.c and the per-protocol files.
  * Addresses and ports are kept in HOST byte order everywhere internally; the
  * un_rd/un_wr helpers convert at the wire boundary. */

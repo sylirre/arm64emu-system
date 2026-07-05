@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sylirre
 # Build the network-test guest initramfs for tests/scripts/net_smoke.sh.
 #
 # The guest userland (busybox + musl loader + virtio/net kernel modules) is

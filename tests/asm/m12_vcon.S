@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* virtio-console (DeviceID 3) bare-metal probe self-test.
  *
  * run_tests.sh runs this one as `-bios <img> -console virtio`, not `-bin`: the

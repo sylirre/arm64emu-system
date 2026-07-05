@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* usernet: self-contained user-mode NAT stack for the virtio-net backend.
  *
  * Replaces libslirp with the same fixed topology: guest 10.0.2.15/24,

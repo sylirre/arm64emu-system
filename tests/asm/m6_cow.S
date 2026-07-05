@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* M6 COW test: emulate the copy-on-write mechanism the kernel relies on.
  * Two VAs (V1,V2) alias one physical page P_shared, mapped read-only. A write
  * to V1 must FAULT; the data-abort handler "breaks COW" by repointing V1's L3

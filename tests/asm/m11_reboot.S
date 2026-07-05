@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* System-reboot (PSCI SYSTEM_RESET) self-test.
  *
  * First boot: stash a marker in persistent RAM, then issue PSCI SYSTEM_RESET.

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sylirre
 # ARM64 (AArch64) system emulator.
 # C11 + libc/POSIX only; networking via the built-in usernet stack (src/net/,
 # user-space NAT over host sockets — no TAP/TUN and no external libraries).

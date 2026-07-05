@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* Machine: physical memory bus (RAM + flash + MMIO devices). */
 #ifndef A64_MACHINE_H
 #define A64_MACHINE_H

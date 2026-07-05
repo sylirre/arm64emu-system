@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
 /* Entry point: CLI parsing, image loading, and the run loop. */
 #include "machine.h"
 #include "cpu.h"
