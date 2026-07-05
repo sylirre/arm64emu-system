@@ -14,7 +14,6 @@
 #   AE_KERNEL      aarch64 EFI-stub kernel   (default: ~/Image.gz)
 #   AE_SRC_INITRD  Alpine initramfs to harvest the guest userland from
 #   AE_BIOS        firmware                  (default: QEMU_EFI.fd path)
-# Optionally AENET=slirp to run the same suite against the libslirp backend.
 set -u
 cd "$(dirname "$0")/../.."
 
@@ -62,9 +61,9 @@ expect() {  # expect LOG MARKER...
     done
 }
 
-note "phase full (backend ${AENET:-user})"
+note "phase full"
 LOG=$(mktemp)
-AENET=${AENET:-user} boot full "$HTTP_PORT" >"$LOG"
+boot full "$HTTP_PORT" >"$LOG"
 expect "$LOG" \
     "AETEST:dhcp:PASS" "AETEST:dhcp2:PASS" "AETEST:ping_gw:PASS" \
     "AETEST:ping_dns:PASS" "AETEST:wget_host:PASS" "MD5:$BIG_MD5" \
@@ -78,7 +77,7 @@ note "phase upload"
 LOG=$(mktemp); UPF=$(mktemp)
 ( timeout 120 nc -l 127.0.0.1 "$UP_PORT" >"$UPF" ) &
 NCPID=$!
-AENET=${AENET:-user} boot upload "$UP_PORT" >"$LOG"
+boot upload "$UP_PORT" >"$LOG"
 wait $NCPID 2>/dev/null
 UPMD5=$(grep -ao "UPMD5:[0-9a-f]*" "$LOG" | cut -d: -f2)
 if [ -n "$UPMD5" ] && [ "$(md5sum "$UPF" | cut -d' ' -f1)" = "$UPMD5" ]; then
@@ -91,7 +90,7 @@ rm -f "$LOG" "$UPF"
 
 note "phase hostfwd tcp"
 LOG=$(mktemp)
-AENET=${AENET:-user} boot nc_listen 8080 -netfwd "tcp:$FWD_TCP:8080" >"$LOG" &
+boot nc_listen 8080 -netfwd "tcp:$FWD_TCP:8080" >"$LOG" &
 BOOTPID=$!
 for i in $(seq 1 240); do
     grep -aq "AETEST:nc_listen:READY" "$LOG" && break; sleep 1
@@ -115,7 +114,7 @@ rm -f "$LOG"
 
 note "phase hostfwd udp"
 LOG=$(mktemp)
-AENET=${AENET:-user} boot udp_echo 8081 -netfwd "udp:$FWD_UDP:8081" >"$LOG" &
+boot udp_echo 8081 -netfwd "udp:$FWD_UDP:8081" >"$LOG" &
 BOOTPID=$!
 for i in $(seq 1 240); do
     grep -aq "AETEST:udp_echo:READY" "$LOG" && break; sleep 1

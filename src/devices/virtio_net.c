@@ -1,25 +1,22 @@
 /* virtio-net over modern (version 2) virtio-mmio transport, slot 0 of QEMU's
  * 'virt' map (0x0a000000, INTID 48 / SPI 16, edge-triggered per the DTB).
  *
- * The backend is libslirp: a user-space TCP/IP stack that NATs guest traffic
- * through regular host sockets — no TAP, TUN, or privileges required.
+ * The backend is usernet (src/net/): a built-in user-mode TCP/IP stack that
+ * NATs guest traffic through regular host sockets — no TAP, TUN, privileges,
+ * or external libraries required.
  *
  * Two virtqueues:
  *   queue 0 (RX): guest posts free buffers; we fill them with incoming frames.
- *   queue 1 (TX): guest posts outgoing frames; we pass them to slirp_input().
+ *   queue 1 (TX): guest posts outgoing frames; we pass them to usernet_input().
  *
  * Processing is synchronous: TX is handled on QueueNotify, RX is injected
  * during virtio_net_poll() which is called from machine_tick() every ~1024
  * guest instructions. */
 #include "../devices.h"
 #include "../net/usernet.h"
-#include "libslirp.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <poll.h>
-#include <time.h>
-#include <arpa/inet.h>
 
 /* Feature bits. VIRTIO_NET_F_MAC and F_STATUS; VIRTIO_F_VERSION_1 mandatory
  * for a modern device (version 2 transport). No offload features — simplest
@@ -50,27 +47,14 @@
 #define NET_QUEUE_RX  0
 #define NET_QUEUE_TX  1
 
-/* Pending RX frame ring — frames queued by slirp_output before the guest
+/* Pending RX frame ring — frames queued by the backend before the guest
  * RX queue is ready. Power-of-two so the head/tail modulo is a mask. */
 #define RX_RING_SIZE  64          /* must be power of 2 */
 #define MAX_ETH_FRAME 1518
 
-/* Poll fd table used during virtio_net_poll(). */
-#define NET_POLL_MAX 128
-
-/* Minimal timer for slirp (used for TCP retransmit, ARP expiry, etc.). */
-typedef struct NetTimer {
-    SlirpTimerCb     cb;
-    void            *cb_opaque;
-    int64_t          expire_ms;    /* 0 = not armed */
-    struct NetTimer *next;
-} NetTimer;
-
 typedef struct VirtIONet {
     Machine *m; GIC *gic; int irq;   /* INTID 49 */
-    Slirp   *slirp;                  /* default backend */
-    UserNet *un;                     /* AENET=user backend (transitional) */
-    NetTimer *timers;
+    UserNet *un;
 
     uint8_t  mac[6];
     uint32_t status, isr;
@@ -81,7 +65,7 @@ typedef struct VirtIONet {
     uint64_t q_desc[2], q_avail[2], q_used[2];
     uint16_t last_avail[2];
 
-    /* Pending RX frames from slirp (written by slirp_output callback,
+    /* Pending RX frames from the backend (queued by net_deliver_frame,
      * drained into guest by net_flush_rx). */
     uint8_t  rx_buf[RX_RING_SIZE][NET_HDR_LEN + MAX_ETH_FRAME];
     uint32_t rx_len[RX_RING_SIZE];
@@ -91,7 +75,7 @@ typedef struct VirtIONet {
 /* ---- helpers ---- */
 
 static void net_reset(VirtIONet *v) {
-    if (v->un) usernet_guest_reset(v->un);
+    usernet_guest_reset(v->un);
     v->status = 0; v->isr = 0;
     v->dev_feat_sel = v->drv_feat_sel = 0; v->drv_feat = 0;
     v->queue_sel = 0;
@@ -174,7 +158,7 @@ static void net_flush_rx(VirtIONet *v) {
     }
 }
 
-/* ---- TX: drain guest TX queue into slirp ---- */
+/* ---- TX: drain guest TX queue into the backend ---- */
 
 static void net_tx_process(VirtIONet *v) {
     Machine *m = v->m;
@@ -211,10 +195,8 @@ static void net_tx_process(VirtIONet *v) {
         }
 
         /* Skip the virtio_net_hdr; pass the raw Ethernet frame to the backend. */
-        if (plen > NET_HDR_LEN) {
-            if (v->un) usernet_input(v->un, pkt + NET_HDR_LEN, plen - NET_HDR_LEN);
-            else       slirp_input(v->slirp, pkt + NET_HDR_LEN, (int)(plen - NET_HDR_LEN));
-        }
+        if (plen > NET_HDR_LEN)
+            usernet_input(v->un, pkt + NET_HDR_LEN, plen - NET_HDR_LEN);
 
         push_used(v, NET_QUEUE_TX, hd, 0);
         did = true;
@@ -229,8 +211,7 @@ static void net_tx_process(VirtIONet *v) {
 /* ---- backend RX entry: queue a frame for delivery to the guest ---- */
 
 /* Returns false when the software RX ring is full: usernet uses that as
- * backpressure (TCP data is simply not emitted yet); the slirp wrapper has
- * to lie and claim success, leaving recovery to TCP retransmission. */
+ * backpressure — TCP data is simply not emitted yet, so nothing is lost. */
 static bool net_deliver_frame(void *opaque, const uint8_t *buf, size_t len) {
     VirtIONet *v = opaque;
     if (len > MAX_ETH_FRAME) return true;              /* oversized: drop */
@@ -246,109 +227,9 @@ static bool net_deliver_frame(void *opaque, const uint8_t *buf, size_t len) {
     return true;
 }
 
-/* ---- slirp callbacks ---- */
-
-static slirp_ssize_t slirp_send_pkt(const void *buf, size_t len, void *opaque) {
-    net_deliver_frame(opaque, buf, len);
-    return (slirp_ssize_t)len;
-}
-
-static void slirp_guest_error(const char *msg, void *opaque) {
-    (void)opaque;
-    fprintf(stderr, "[virtio-net/slirp] %s\n", msg);
-}
-
-static int64_t slirp_clock_ns(void *opaque) {
-    (void)opaque;
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
-}
-
-static void *slirp_timer_new(SlirpTimerCb cb, void *cb_opaque, void *opaque) {
-    VirtIONet *v = opaque;
-    NetTimer *t = calloc(1, sizeof(NetTimer));
-    t->cb = cb; t->cb_opaque = cb_opaque;
-    t->next = v->timers; v->timers = t;
-    return t;
-}
-
-static void slirp_timer_free(void *timer, void *opaque) {
-    VirtIONet *v = opaque;
-    NetTimer *t = timer;
-    NetTimer **p = &v->timers;
-    while (*p && *p != t) p = &(*p)->next;
-    if (*p) *p = t->next;
-    free(t);
-}
-
-static void slirp_timer_mod(void *timer, int64_t expire_ms, void *opaque) {
-    (void)opaque;
-    ((NetTimer *)timer)->expire_ms = expire_ms;
-}
-
-static void slirp_noop_register(slirp_os_socket fd, void *opaque) {
-    (void)fd; (void)opaque;
-}
-
-static void slirp_noop_notify(void *opaque) { (void)opaque; }
-
-/* ---- poll context for virtio_net_poll ---- */
-
-typedef struct {
-    struct pollfd pfds[NET_POLL_MAX];
-    int nfds;
-} PollCtx;
-
-static int add_poll_socket(slirp_os_socket fd, int events, void *opaque) {
-    PollCtx *ctx = opaque;
-    if (ctx->nfds >= NET_POLL_MAX) return -1;
-    int idx = ctx->nfds++;
-    ctx->pfds[idx].fd = (int)fd;
-    ctx->pfds[idx].events = 0;
-    if (events & SLIRP_POLL_IN)  ctx->pfds[idx].events |= POLLIN;
-    if (events & SLIRP_POLL_OUT) ctx->pfds[idx].events |= POLLOUT;
-    if (events & SLIRP_POLL_PRI) ctx->pfds[idx].events |= POLLPRI;
-    ctx->pfds[idx].revents = 0;
-    return idx;
-}
-
-static int get_revents(int idx, void *opaque) {
-    PollCtx *ctx = opaque;
-    if (idx < 0 || idx >= ctx->nfds) return 0;
-    int rev = ctx->pfds[idx].revents;
-    int r = 0;
-    if (rev & POLLIN)  r |= SLIRP_POLL_IN;
-    if (rev & POLLOUT) r |= SLIRP_POLL_OUT;
-    if (rev & POLLPRI) r |= SLIRP_POLL_PRI;
-    if (rev & POLLERR) r |= SLIRP_POLL_ERR;
-    if (rev & POLLHUP) r |= SLIRP_POLL_HUP;
-    return r;
-}
-
-static void net_fire_timers(VirtIONet *v) {
-    int64_t now_ms = slirp_clock_ns(v) / 1000000LL;
-    for (NetTimer *t = v->timers; t; t = t->next) {
-        if (t->expire_ms && t->expire_ms <= now_ms) {
-            t->expire_ms = 0;
-            t->cb(t->cb_opaque);
-        }
-    }
-}
-
 /* Called from machine_tick() every ~1024 guest instructions. */
 void virtio_net_poll(VirtIONet *v) {
-    if (v->un) {
-        usernet_poll(v->un);
-        net_flush_rx(v);
-        return;
-    }
-    net_fire_timers(v);
-    PollCtx ctx = {0};
-    uint32_t timeout = 0;
-    slirp_pollfds_fill_socket(v->slirp, &timeout, add_poll_socket, &ctx);
-    if (ctx.nfds > 0) poll(ctx.pfds, ctx.nfds, 0);
-    slirp_pollfds_poll(v->slirp, 0, get_revents, &ctx);
+    usernet_poll(v->un);
     net_flush_rx(v);
 }
 
@@ -444,74 +325,18 @@ VirtIONet *virtio_net_create(Machine *m, GIC *gic) {
     static const uint8_t default_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
     memcpy(v->mac, default_mac, 6);
 
-    /* Transitional backend switch while the in-tree stack is brought up:
-     * AENET=user selects usernet, anything else keeps libslirp. */
-    const char *backend = getenv("AENET");
-    if (backend && !strcmp(backend, "user")) {
-        v->un = usernet_new(net_deliver_frame, v, v->mac);
-        if (!v->un) { fprintf(stderr, "[virtio-net] usernet_new failed\n"); exit(1); }
-        for (int i = 0; i < m->n_net_fwds; i++) {
-            int r = usernet_add_hostfwd(v->un, m->net_fwds[i].is_udp,
-                                        (uint16_t)m->net_fwds[i].host_port,
-                                        (uint16_t)m->net_fwds[i].guest_port);
-            fprintf(stderr, "[virtio-net] port forward %s %d -> 10.0.2.15:%d%s\n",
-                    m->net_fwds[i].is_udp ? "udp" : "tcp",
-                    m->net_fwds[i].host_port, m->net_fwds[i].guest_port,
-                    r < 0 ? " FAILED" : "");
-        }
-        machine_add_device(m, 0x0a000000, 0x200, net_read, net_write, v, "virtio-net");
-        m->net = v;
-        fprintf(stderr, "[virtio-net] backend usernet, MAC %02x:%02x:%02x:%02x:%02x:%02x, "
-                "guest 10.0.2.15/24 gw 10.0.2.2 dns 10.0.2.3\n",
-                v->mac[0], v->mac[1], v->mac[2], v->mac[3], v->mac[4], v->mac[5]);
-        return v;
-    }
-
-    static const SlirpCb cbs = {
-        .send_packet          = slirp_send_pkt,
-        .guest_error          = slirp_guest_error,
-        .clock_get_ns         = slirp_clock_ns,
-        .timer_new            = slirp_timer_new,
-        .timer_free           = slirp_timer_free,
-        .timer_mod            = slirp_timer_mod,
-        .register_poll_fd     = NULL,   /* not called: cfg_version >= 6 */
-        .unregister_poll_fd   = NULL,
-        .notify               = slirp_noop_notify,
-        .init_completed       = NULL,
-        .timer_new_opaque     = NULL,   /* falls back to timer_new */
-        .register_poll_socket   = slirp_noop_register,
-        .unregister_poll_socket = slirp_noop_register,
-    };
-
-    SlirpConfig cfg = {0};
-    cfg.version        = 6;             /* needed for register_poll_socket path */
-    cfg.in_enabled     = true;
-    cfg.in6_enabled    = false;
-    inet_pton(AF_INET, "10.0.2.0",   &cfg.vnetwork);
-    inet_pton(AF_INET, "255.255.255.0", &cfg.vnetmask);
-    inet_pton(AF_INET, "10.0.2.2",   &cfg.vhost);
-    inet_pton(AF_INET, "10.0.2.15",  &cfg.vdhcp_start);
-    inet_pton(AF_INET, "10.0.2.3",   &cfg.vnameserver);
-
-    v->slirp = slirp_new(&cfg, &cbs, v);
-    if (!v->slirp) { fprintf(stderr, "[virtio-net] slirp_new failed\n"); exit(1); }
+    v->un = usernet_new(net_deliver_frame, v, v->mac);
+    if (!v->un) { fprintf(stderr, "[virtio-net] usernet_new failed\n"); exit(1); }
 
     /* Apply port-forwarding rules from -netfwd options. */
-    struct in_addr host_addr = {INADDR_ANY};
-    struct in_addr guest_addr;
-    inet_pton(AF_INET, "10.0.2.15", &guest_addr);
     for (int i = 0; i < m->n_net_fwds; i++) {
-        if (slirp_add_hostfwd(v->slirp, m->net_fwds[i].is_udp,
-                              host_addr, m->net_fwds[i].host_port,
-                              guest_addr, m->net_fwds[i].guest_port) < 0) {
-            fprintf(stderr, "[virtio-net] port forward %s:%d -> 10.0.2.15:%d failed\n",
-                    m->net_fwds[i].is_udp ? "udp" : "tcp",
-                    m->net_fwds[i].host_port, m->net_fwds[i].guest_port);
-        } else {
-            fprintf(stderr, "[virtio-net] port forward %s %d -> 10.0.2.15:%d\n",
-                    m->net_fwds[i].is_udp ? "udp" : "tcp",
-                    m->net_fwds[i].host_port, m->net_fwds[i].guest_port);
-        }
+        int r = usernet_add_hostfwd(v->un, m->net_fwds[i].is_udp,
+                                    (uint16_t)m->net_fwds[i].host_port,
+                                    (uint16_t)m->net_fwds[i].guest_port);
+        fprintf(stderr, "[virtio-net] port forward %s %d -> 10.0.2.15:%d%s\n",
+                m->net_fwds[i].is_udp ? "udp" : "tcp",
+                m->net_fwds[i].host_port, m->net_fwds[i].guest_port,
+                r < 0 ? " FAILED" : "");
     }
 
     machine_add_device(m, 0x0a000000, 0x200, net_read, net_write, v, "virtio-net");

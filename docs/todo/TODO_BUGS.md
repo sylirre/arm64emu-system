@@ -162,19 +162,11 @@ with stale PAR_EL1.
 ## 3. Device-model bugs
 
 ### 3.1 virtio-net RX: unbounded descriptor-chain walk → host infinite loop
-`virtio_net.c:145-157`: the RX delivery loop follows `next` pointers with **no
-chain-length bound** (TX at `:189-203` and blk/9p both bound with `n >= q_num`).
-A malformed or malicious guest driver posting a cycle of zero-length
-descriptors with F_NEXT set hangs the emulator process hard (`written` never
-advances, loop never breaks). Also: descriptors are not checked for
-`VIRTQ_DESC_F_WRITE` before being written to. **Fix:** count descriptors,
-bail at `q_num`, and skip read-only descriptors.
+**FIXED** ("fix(virtio-net): harden the RX descriptor-chain walk"): the walk
+is bounded by `q_num` and skips descriptors lacking `VIRTQ_DESC_F_WRITE`.
 
 ### 3.2 virtio-net RX: used.len over-reports on short buffer chains
-`virtio_net.c:159`: `push_used(..., flen)` publishes the full frame length
-even when the chain had less room (`written < flen`). The guest driver will
-read `len` bytes from a buffer we only partially filled. **Fix:** push
-`written`.
+**FIXED** (same commit): `push_used` publishes the bytes actually written.
 
 ### 3.3 PL031 RTC: setting the clock double-counts, and the alarm never fires
 `pl031.c:20-23`: `DR = base + lr` — LR is architecturally a *load* of the

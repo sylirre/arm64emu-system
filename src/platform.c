@@ -112,7 +112,7 @@ void machine_reset(Machine *m, u64 entry, unsigned reset_el) {
     /* PSCI SYSTEM_RESET (warm reboot). Return every device to power-on state and
      * restart the boot CPU without tearing down host-backed resources: the NOR
      * flash (UEFI variable store), fw_cfg payloads, open -drive images and the
-     * slirp network all persist across the reboot, matching real hardware.
+     * usernet backend all persist across the reboot, matching real hardware.
      * virtio-blk/9p need no explicit reset here — the rebooting firmware/OS
      * resets each through the virtio STATUS=0 probe handshake before first use;
      * virtio-net is quiesced because it is polled in the background. */

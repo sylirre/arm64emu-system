@@ -44,8 +44,9 @@ make test                  # runs the assembly self-tests
 
 Useful flags: `-m <MB>` RAM size, `-dtb FILE` supply a device tree,
 `-drive IMG[,ro]` attach a virtio-blk disk (repeatable; `ro` opens the image
-read-only and advertises VIRTIO_BLK_F_RO), `-net` user-mode
-networking, `-virtfs DIR[,tag=TAG][,ro]` share a host directory over virtio-9p
+read-only and advertises VIRTIO_BLK_F_RO), `-net` user-mode networking
+(`-netfwd tcp|udp:HOST_PORT:GUEST_PORT` forwards host ports to the guest),
+`-virtfs DIR[,tag=TAG][,ro]` share a host directory over virtio-9p
 (repeatable), `-console pl011|virtio` pick the console device (default `pl011`),
 `-bin FILE@ADDR` load a flat binary (bare-metal tests), `-d`
 per-instruction trace, `-rt` register trace, `-maxinsn N` stop after N
@@ -189,10 +190,12 @@ an exception-return bug (instruction-abort ELR pointing at the wrong PC).
   **performance** is ~40 MIPS, so a full distro boot is slow (see *Performance
   notes* below for why a decoded-instruction cache did **not** help).
 - **Devices**: **virtio-blk** (`-drive`, disk-backed rootfs), **virtio-net**
-  (`-net`, user-mode NAT via libslirp), **virtio-9p** (`-virtfs`, host
-  directory sharing), and **virtio-console** (`-console virtio`, host-tracking
-  `hvc0` terminal size) are implemented over virtio-mmio, alongside the fw_cfg
-  initramfs rootfs.
+  (`-net`, user-mode NAT via the built-in usernet stack in `src/net/`: DHCP,
+  DNS redirect, TCP/UDP proxying and `-netfwd` port forwarding over plain
+  host sockets — IPv4 only, no TAP/TUN, no external libraries), **virtio-9p**
+  (`-virtfs`, host directory sharing), and **virtio-console** (`-console
+  virtio`, host-tracking `hvc0` terminal size) are implemented over
+  virtio-mmio, alongside the fw_cfg initramfs rootfs.
 
 These are incremental extensions along the path already established. The hard
 parts — a correct CPU/MMU/exception core, the device model, the CFI flash and
