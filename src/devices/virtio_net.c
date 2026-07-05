@@ -139,24 +139,29 @@ static void net_flush_rx(VirtIONet *v) {
         uint8_t  *frame = v->rx_buf[slot];
         uint32_t  flen  = v->rx_len[slot];
 
-        /* Write the frame (hdr + packet) into the guest descriptor chain. */
+        /* Write the frame (hdr + packet) into the guest descriptor chain.
+         * Bound the walk by q_num (a malformed cyclic chain must not hang us)
+         * and only fill device-writable descriptors. */
         uint32_t written = 0;
-        uint32_t idx = hd;
-        while (written < flen) {
+        uint32_t n = 0, idx = hd;
+        while (written < flen && n < q_num) {
             uint64_t d    = v->q_desc[NET_QUEUE_RX] + (uint64_t)idx * 16;
             uint64_t gpa  = phys_read(m, d + 0, 8);
             uint32_t dlen = (uint32_t)phys_read(m, d + 8, 4);
             uint16_t df   = (uint16_t)phys_read(m, d + 12, 2);
             uint16_t next = (uint16_t)phys_read(m, d + 14, 2);
-            uint32_t chunk = flen - written;
-            if (chunk > dlen) chunk = dlen;
-            phys_write_blk(m, gpa, frame + written, chunk);
-            written += chunk;
-            if (!(df & VIRTQ_DESC_F_NEXT) || written >= flen) break;
+            n++;
+            if (df & VIRTQ_DESC_F_WRITE) {
+                uint32_t chunk = flen - written;
+                if (chunk > dlen) chunk = dlen;
+                phys_write_blk(m, gpa, frame + written, chunk);
+                written += chunk;
+            }
+            if (!(df & VIRTQ_DESC_F_NEXT)) break;
             idx = next;
         }
 
-        push_used(v, NET_QUEUE_RX, hd, flen);
+        push_used(v, NET_QUEUE_RX, hd, written);
         did = true;
     }
 
