@@ -13,10 +13,7 @@ bool un_emit_udp(UserNet *un, const uint8_t *eth_dst,
                  uint32_t dst_ip, uint16_t dst_port,
                  const uint8_t *payload, size_t plen) {
     if (plen > UN_MTU - 28) return false;
-    if (!eth_dst) {
-        if (!un->guest_mac_known) return false;
-        eth_dst = un->guest_mac;
-    }
+    if (!eth_dst) eth_dst = un->guest_mac;
     uint8_t buf[UN_MAX_FRAME];
 
     memcpy(buf + 0, eth_dst, 6);
@@ -216,6 +213,45 @@ void un_udp_reset(UserNet *un) {
         if (un->udp[i].in_use) flow_close(&un->udp[i]);
 }
 
+/* ---- UDP hostfwd ---- */
+
+/* Host datagram on a -netfwd socket -> guest, spoofed from the real peer. */
+void un_udp_fwd_readable(UserNet *un, HostFwd *fw) {
+    uint8_t buf[UN_MTU - 28];
+    for (int burst = 0; burst < 32; burst++) {
+        struct sockaddr_in peer;
+        socklen_t plen = sizeof(peer);
+        ssize_t n = recvfrom(fw->fd, buf, sizeof(buf), 0,
+                             (struct sockaddr *)&peer, &plen);
+        if (n < 0) return;
+        uint32_t p_ip = ntohl(peer.sin_addr.s_addr);
+        /* loopback peers are unroutable from the guest: show the gateway */
+        if ((p_ip >> 24) == 127 || p_ip == 0) p_ip = UN_IP_HOST;
+        if (!un_emit_udp(un, NULL, p_ip, ntohs(peer.sin_port),
+                         UN_IP_GUEST, fw->guest_port, buf, (size_t)n))
+            return;
+    }
+}
+
+/* Guest datagrams sourced from a forwarded port reply through the rule's
+ * bound socket, so the peer sees them coming from the forwarded host port. */
+bool un_udp_fwd_input(UserNet *un, uint32_t dst, uint16_t sport,
+                      uint16_t dport, const uint8_t *payload, size_t plen) {
+    for (int i = 0; i < un->n_fwd; i++) {
+        HostFwd *fw = &un->fwd[i];
+        if (!fw->is_udp || fw->guest_port != sport) continue;
+        struct sockaddr_in sa = {0};
+        sa.sin_family = AF_INET;
+        /* the gateway address stands in for loopback peers; map it back */
+        sa.sin_addr.s_addr = htonl(dst == UN_IP_HOST ? UN_IP(127,0,0,1) : dst);
+        sa.sin_port = htons(dport);
+        sendto(fw->fd, payload, plen, MSG_NOSIGNAL,
+               (struct sockaddr *)&sa, sizeof(sa));
+        return true;
+    }
+    return false;
+}
+
 /* Guest UDP entry point: DHCP is served locally, the rest is NATed. */
 void un_udp_input(UserNet *un, uint32_t src, uint32_t dst,
                   const uint8_t *udp, size_t len) {
@@ -230,6 +266,8 @@ void un_udp_input(UserNet *un, uint32_t src, uint32_t dst,
         dhcp_input(un, udp + 8, ulen - 8);
         return;
     }
+    if (un_udp_fwd_input(un, dst, sport, dport, udp + 8, ulen - 8))
+        return;
     /* No NAT for broadcast/multicast chatter (SSDP, mDNS, ...). */
     if (dst == 0xffffffffu || dst == (UN_NET | ~UN_NETMASK) ||
         (dst >> 28) == 0xe)

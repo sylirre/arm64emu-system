@@ -31,7 +31,80 @@
 extern const uint8_t un_host_mac[6];     /* 52:55:0a:00:02:02 */
 
 /* ---- poll table entry kinds ---- */
-enum { UN_PK_NONE = 0, UN_PK_UDP };
+enum { UN_PK_NONE = 0, UN_PK_UDP, UN_PK_TCP, UN_PK_ICMP,
+       UN_PK_TCP_LISTEN, UN_PK_UDP_FWD };
+
+/* -netfwd rule: a host listener (TCP) or bound socket (UDP) that forwards
+ * to 10.0.2.15:guest_port. Persists across guest reboots. */
+typedef struct HostFwd {
+    bool     is_udp;
+    uint16_t host_port, guest_port;
+    int      fd;
+} HostFwd;
+
+#define UN_FWD_MAX 16
+
+/* One relayed external ping (guest echo id <-> unprivileged ICMP socket;
+ * the kernel rewrites the id on the wire, we map it back on replies). */
+typedef struct IcmpFlow {
+    bool     in_use;
+    uint16_t g_id;
+    uint32_t dst_ip;
+    int      fd;
+    int64_t  last_ms;
+} IcmpFlow;
+
+#define UN_ICMP_MAX     8
+#define UN_ICMP_TTL_MS  30000
+
+/* ---- TCP proxy ----
+ * Guest-side TCP is synthesized here; the host side is an ordinary
+ * nonblocking socket. The virtual link cannot reorder and guest->host frames
+ * cannot be lost (TX is synchronous), so no reassembly queue and no
+ * congestion control; only host->guest segments can be refused by the RX
+ * ring, which the emit loop treats as "not sent yet". */
+enum {
+    TG_FREE = 0,
+    TG_SYN_WAIT,     /* guest SYN seen; host connect() in flight */
+    TG_SYN_RCVD,     /* SYN-ACK sent (or pending), waiting for guest ACK */
+    TG_SYN_SENT,     /* hostfwd active open: SYN sent toward the guest */
+    TG_EST,
+    TG_LINGER        /* fully closed; absorbs stray retransmits, then freed */
+};
+
+#define UN_TCP_MAX          128
+#define UN_TCP_H2G          65536    /* host->guest ring; retransmit source */
+#define UN_TCP_G2H          32768    /* guest->host staging for blocked writes */
+#define UN_TCP_MSS          1460
+#define UN_TCP_RTO_MS       500
+#define UN_TCP_RTO_SHOTS    8
+#define UN_TCP_SYN_TMO_MS   30000
+#define UN_TCP_LINGER_MS    5000
+
+typedef struct TcpConn {
+    struct TcpConn *next;
+    uint8_t  state;
+    bool     is_hostfwd;
+    uint32_t r_ip;                   /* remote as the guest sees it */
+    uint16_t r_port, g_port;
+    int      fd;
+
+    /* our send side (host->guest): [snd_una, snd_nxt) in flight */
+    uint32_t iss, snd_una, snd_nxt;
+    uint32_t rcv_nxt;                /* guest->host */
+    uint16_t mss;                    /* guest's, clamped to UN_TCP_MSS */
+    uint32_t peer_wnd;               /* guest's advertised window (no WS) */
+    bool     synack_sent, fin_sent, fin_acked;
+    bool     guest_fin_rcvd, host_eof, host_wr_shut;
+
+    /* h2g ring holds [snd_una ...]; g2h ring drains into the host socket */
+    uint8_t *h2g, *g2h;
+    uint32_t h2g_head, h2g_len, g2h_head, g2h_len;
+
+    int64_t  rto_at;                 /* 0 = unarmed */
+    uint8_t  rto_shots;
+    int64_t  expire_at;              /* SYN_WAIT / SYN_SENT / LINGER deadline */
+} TcpConn;
 
 /* One NATed UDP flow: guest source port <-> connected host socket.
  * r_* is the remote as the guest sees it (10.0.2.3:53 for DNS); the socket
@@ -52,8 +125,7 @@ struct UserNet {
     usernet_output_fn output;
     void   *opaque;
 
-    uint8_t guest_mac[6];
-    bool    guest_mac_known;
+    uint8_t guest_mac[6];            /* seeded at creation, tracked on TX */
 
     int64_t  now_ms;                     /* refreshed at each poll/input */
     uint16_t ip_id;                      /* incrementing, deterministic */
@@ -66,6 +138,17 @@ struct UserNet {
     UdpFlow udp[UN_UDP_MAX];
     int64_t udp_sweep_ms;
 
+    TcpConn *tcp;                    /* live connections (singly linked) */
+    int      n_tcp;
+    uint32_t tcp_iss;                /* deterministic ISS counter */
+
+    IcmpFlow icmp[UN_ICMP_MAX];
+    int64_t  icmp_sweep_ms;
+    bool     ping_unavail;           /* ping sockets denied: drop silently */
+
+    HostFwd fwd[UN_FWD_MAX];
+    int     n_fwd;
+
     /* cached real DNS server (host order), re-read every few seconds */
     uint32_t dns_ip;
     int64_t  dns_check_ms;
@@ -73,6 +156,7 @@ struct UserNet {
 
     /* stats (printed at exit with AENET_STATS=1) */
     uint64_t st_in_frames, st_out_ok, st_out_refused, st_out_drop;
+    uint64_t st_tcp_conns, st_tcp_rtx;
 
     FILE *pcap;                          /* AENET_PCAP=<file>, else NULL */
 };
@@ -146,5 +230,20 @@ void un_udp_fill(UserNet *un);
 void un_udp_readable(UserNet *un, UdpFlow *f);
 void un_udp_tick(UserNet *un);
 void un_udp_reset(UserNet *un);
+
+/* usernet_tcp.c */
+void un_tcp_input(UserNet *un, uint32_t src, uint32_t dst,
+                  const uint8_t *tcp, size_t len);
+void un_tcp_fill(UserNet *un);
+void un_tcp_event(UserNet *un, TcpConn *c, short revents);
+void un_tcp_tick(UserNet *un);
+void un_tcp_emit_all(UserNet *un);
+void un_tcp_reset(UserNet *un);
+void un_tcp_accept(UserNet *un, HostFwd *fw);
+
+/* hostfwd (rule sockets live in core; UDP data path in usernet_udp.c) */
+bool un_udp_fwd_input(UserNet *un, uint32_t dst, uint16_t sport,
+                      uint16_t dport, const uint8_t *payload, size_t plen);
+void un_udp_fwd_readable(UserNet *un, HostFwd *fw);
 
 #endif

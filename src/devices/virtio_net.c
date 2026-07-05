@@ -448,7 +448,7 @@ VirtIONet *virtio_net_create(Machine *m, GIC *gic) {
      * AENET=user selects usernet, anything else keeps libslirp. */
     const char *backend = getenv("AENET");
     if (backend && !strcmp(backend, "user")) {
-        v->un = usernet_new(net_deliver_frame, v);
+        v->un = usernet_new(net_deliver_frame, v, v->mac);
         if (!v->un) { fprintf(stderr, "[virtio-net] usernet_new failed\n"); exit(1); }
         for (int i = 0; i < m->n_net_fwds; i++) {
             int r = usernet_add_hostfwd(v->un, m->net_fwds[i].is_udp,

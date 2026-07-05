@@ -21,7 +21,10 @@ typedef struct UserNet UserNet;
 
 typedef bool (*usernet_output_fn)(void *opaque, const uint8_t *frame, size_t len);
 
-UserNet *usernet_new(usernet_output_fn output, void *opaque);
+/* guest_mac: the MAC the device advertises in config space, so frames can
+ * be addressed to the guest before it ever transmits. */
+UserNet *usernet_new(usernet_output_fn output, void *opaque,
+                     const uint8_t guest_mac[6]);
 int      usernet_add_hostfwd(UserNet *un, bool is_udp,
                              uint16_t host_port, uint16_t guest_port);
 void     usernet_input(UserNet *un, const uint8_t *frame, size_t len);
