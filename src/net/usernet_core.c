@@ -150,7 +150,7 @@ static void ip_input(UserNet *un, const uint8_t *ip, size_t len) {
 
     switch (ip[9]) {
         case UN_IPP_ICMP: icmp_input(un, src, dst, l4, l4len); break;
-        case UN_IPP_UDP:  break;         /* usernet_udp.c, next commits */
+        case UN_IPP_UDP:  un_udp_input(un, src, dst, l4, l4len); break;
         case UN_IPP_TCP:  break;         /* usernet_tcp.c, next commits */
         default: break;
     }
@@ -179,11 +179,20 @@ void usernet_input(UserNet *un, const uint8_t *frame, size_t len) {
 
 void usernet_poll(UserNet *un) {
     un->now_ms = un_now_ms();
+    un_udp_tick(un);
+
     un->npfds = 0;
-    /* Protocol handlers register their fds here as they land in later
-     * commits; until then there is nothing to poll. */
-    if (un->npfds > 0)
-        poll(un->pfds, (nfds_t)un->npfds, 0);
+    un_udp_fill(un);
+    if (un->npfds == 0) return;          /* nothing live: skip the syscall */
+
+    if (poll(un->pfds, (nfds_t)un->npfds, 0) <= 0) return;
+    for (int i = 0; i < un->npfds; i++) {
+        if (!un->pfds[i].revents) continue;
+        switch (un->pref[i].kind) {
+            case UN_PK_UDP: un_udp_readable(un, un->pref[i].obj); break;
+            default: break;
+        }
+    }
 }
 
 int usernet_add_hostfwd(UserNet *un, bool is_udp,
@@ -194,7 +203,36 @@ int usernet_add_hostfwd(UserNet *un, bool is_udp,
 }
 
 void usernet_guest_reset(UserNet *un) {
-    (void)un;                            /* no flows to tear down yet */
+    un_udp_reset(un);
+}
+
+uint32_t un_dns_server(UserNet *un) {
+    if (un->dns_ip && un->now_ms - un->dns_check_ms < 5000)
+        return un->dns_ip;
+    un->dns_check_ms = un->now_ms;
+
+    uint32_t ip = 0;
+    FILE *f = fopen("/etc/resolv.conf", "r");
+    if (f) {
+        char line[256];
+        while (!ip && fgets(line, sizeof(line), f)) {
+            unsigned a, b, c, d;
+            if (sscanf(line, " nameserver %u.%u.%u.%u", &a, &b, &c, &d) == 4 &&
+                a < 256 && b < 256 && c < 256 && d < 256)
+                ip = UN_IP(a, b, c, d);
+        }
+        fclose(f);
+    }
+    if (!ip) {
+        ip = UN_IP(127,0,0,53);          /* systemd-resolved stub, last resort */
+        if (!un->dns_warned) {
+            un->dns_warned = true;
+            fprintf(stderr, "[usernet] no IPv4 nameserver in /etc/resolv.conf, "
+                    "trying 127.0.0.53\n");
+        }
+    }
+    un->dns_ip = ip;
+    return ip;
 }
 
 static void un_stats_dump(void) {
