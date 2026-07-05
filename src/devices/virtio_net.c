@@ -12,6 +12,7 @@
  * during virtio_net_poll() which is called from machine_tick() every ~1024
  * guest instructions. */
 #include "../devices.h"
+#include "../net/usernet.h"
 #include "libslirp.h"
 #include <stdlib.h>
 #include <stdio.h>
@@ -67,7 +68,8 @@ typedef struct NetTimer {
 
 typedef struct VirtIONet {
     Machine *m; GIC *gic; int irq;   /* INTID 49 */
-    Slirp   *slirp;
+    Slirp   *slirp;                  /* default backend */
+    UserNet *un;                     /* AENET=user backend (transitional) */
     NetTimer *timers;
 
     uint8_t  mac[6];
@@ -89,6 +91,7 @@ typedef struct VirtIONet {
 /* ---- helpers ---- */
 
 static void net_reset(VirtIONet *v) {
+    if (v->un) usernet_guest_reset(v->un);
     v->status = 0; v->isr = 0;
     v->dev_feat_sel = v->drv_feat_sel = 0; v->drv_feat = 0;
     v->queue_sel = 0;
@@ -104,7 +107,7 @@ static void net_reset(VirtIONet *v) {
 /* System-reset entry point: identical to a guest-driven STATUS=0 device reset.
  * Called explicitly on reboot because virtio-net is background-polled, so its
  * queues must be quiesced before the rebooting firmware reuses guest RAM (the
- * slirp backend and any host port-forwards are preserved). */
+ * network backend and any host port-forwards are preserved). */
 void virtio_net_reset(VirtIONet *v) { net_reset(v); }
 
 static void push_used(VirtIONet *v, int q, uint16_t id, uint32_t len) {
@@ -207,9 +210,11 @@ static void net_tx_process(VirtIONet *v) {
             idx = next;
         }
 
-        /* Skip the virtio_net_hdr; pass the raw Ethernet frame to slirp. */
-        if (plen > NET_HDR_LEN)
-            slirp_input(v->slirp, pkt + NET_HDR_LEN, (int)(plen - NET_HDR_LEN));
+        /* Skip the virtio_net_hdr; pass the raw Ethernet frame to the backend. */
+        if (plen > NET_HDR_LEN) {
+            if (v->un) usernet_input(v->un, pkt + NET_HDR_LEN, plen - NET_HDR_LEN);
+            else       slirp_input(v->slirp, pkt + NET_HDR_LEN, (int)(plen - NET_HDR_LEN));
+        }
 
         push_used(v, NET_QUEUE_TX, hd, 0);
         did = true;
@@ -221,20 +226,30 @@ static void net_tx_process(VirtIONet *v) {
     }
 }
 
-/* ---- slirp callbacks ---- */
+/* ---- backend RX entry: queue a frame for delivery to the guest ---- */
 
-static slirp_ssize_t slirp_send_pkt(const void *buf, size_t len, void *opaque) {
+/* Returns false when the software RX ring is full: usernet uses that as
+ * backpressure (TCP data is simply not emitted yet); the slirp wrapper has
+ * to lie and claim success, leaving recovery to TCP retransmission. */
+static bool net_deliver_frame(void *opaque, const uint8_t *buf, size_t len) {
     VirtIONet *v = opaque;
+    if (len > MAX_ETH_FRAME) return true;              /* oversized: drop */
     int next_tail = (v->rx_tail + 1) & (RX_RING_SIZE - 1);
-    if (next_tail == v->rx_head) return (slirp_ssize_t)len; /* ring full, drop */
+    if (next_tail == v->rx_head) return false;         /* ring full */
     int slot = v->rx_tail;
     v->rx_tail = next_tail;
 
     memset(v->rx_buf[slot], 0, NET_HDR_LEN);          /* zero virtio_net_hdr */
     v->rx_buf[slot][10] = 1;                           /* num_buffers = 1 (LE) */
-    uint32_t pkt_len = len > MAX_ETH_FRAME ? MAX_ETH_FRAME : (uint32_t)len;
-    memcpy(v->rx_buf[slot] + NET_HDR_LEN, buf, pkt_len);
-    v->rx_len[slot] = NET_HDR_LEN + pkt_len;
+    memcpy(v->rx_buf[slot] + NET_HDR_LEN, buf, len);
+    v->rx_len[slot] = NET_HDR_LEN + (uint32_t)len;
+    return true;
+}
+
+/* ---- slirp callbacks ---- */
+
+static slirp_ssize_t slirp_send_pkt(const void *buf, size_t len, void *opaque) {
+    net_deliver_frame(opaque, buf, len);
     return (slirp_ssize_t)len;
 }
 
@@ -323,6 +338,11 @@ static void net_fire_timers(VirtIONet *v) {
 
 /* Called from machine_tick() every ~1024 guest instructions. */
 void virtio_net_poll(VirtIONet *v) {
+    if (v->un) {
+        usernet_poll(v->un);
+        net_flush_rx(v);
+        return;
+    }
     net_fire_timers(v);
     PollCtx ctx = {0};
     uint32_t timeout = 0;
@@ -423,6 +443,29 @@ VirtIONet *virtio_net_create(Machine *m, GIC *gic) {
     /* Stable MAC: 52:54:00:12:34:56 (QEMU's default range). */
     static const uint8_t default_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
     memcpy(v->mac, default_mac, 6);
+
+    /* Transitional backend switch while the in-tree stack is brought up:
+     * AENET=user selects usernet, anything else keeps libslirp. */
+    const char *backend = getenv("AENET");
+    if (backend && !strcmp(backend, "user")) {
+        v->un = usernet_new(net_deliver_frame, v);
+        if (!v->un) { fprintf(stderr, "[virtio-net] usernet_new failed\n"); exit(1); }
+        for (int i = 0; i < m->n_net_fwds; i++) {
+            int r = usernet_add_hostfwd(v->un, m->net_fwds[i].is_udp,
+                                        (uint16_t)m->net_fwds[i].host_port,
+                                        (uint16_t)m->net_fwds[i].guest_port);
+            fprintf(stderr, "[virtio-net] port forward %s %d -> 10.0.2.15:%d%s\n",
+                    m->net_fwds[i].is_udp ? "udp" : "tcp",
+                    m->net_fwds[i].host_port, m->net_fwds[i].guest_port,
+                    r < 0 ? " FAILED" : "");
+        }
+        machine_add_device(m, 0x0a000000, 0x200, net_read, net_write, v, "virtio-net");
+        m->net = v;
+        fprintf(stderr, "[virtio-net] backend usernet, MAC %02x:%02x:%02x:%02x:%02x:%02x, "
+                "guest 10.0.2.15/24 gw 10.0.2.2 dns 10.0.2.3\n",
+                v->mac[0], v->mac[1], v->mac[2], v->mac[3], v->mac[4], v->mac[5]);
+        return v;
+    }
 
     static const SlirpCb cbs = {
         .send_packet          = slirp_send_pkt,

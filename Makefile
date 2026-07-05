@@ -22,7 +22,7 @@ CFLAGS  += -I$(SLIRP_DIR)/src -I$(SLIRP_BUILD)
 LDLIBS  += $(shell pkg-config --libs glib-2.0)
 
 # ---- emulator sources ----
-SRC := $(wildcard src/*.c) $(wildcard src/devices/*.c)
+SRC := $(wildcard src/*.c) $(wildcard src/devices/*.c) $(wildcard src/net/*.c)
 OBJ := $(SRC:.c=.o)
 DEP := $(OBJ:.o=.d)
 BIN := arm64emu
