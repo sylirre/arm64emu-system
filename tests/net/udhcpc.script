@@ -1,0 +1,16 @@
+#!/bin/sh
+# Minimal udhcpc event script for the network test guest.
+case "$1" in
+bound|renew)
+    ifconfig "$interface" "$ip" netmask "${subnet:-255.255.255.0}"
+    if [ -n "$router" ]; then
+        route del default 2>/dev/null
+        route add default gw "${router%% *}" dev "$interface"
+    fi
+    [ -n "$dns" ] && echo "nameserver ${dns%% *}" > /etc/resolv.conf
+    ;;
+deconfig)
+    ifconfig "$interface" 0.0.0.0
+    ;;
+esac
+exit 0

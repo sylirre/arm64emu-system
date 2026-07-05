@@ -1,0 +1,165 @@
+#!/bin/busybox sh
+# Network test-guest /init for arm64emu. Built into an initramfs by
+# mk_guest_initrd.sh; the phase to run comes from aetest= on the kernel
+# cmdline (aearg= is an optional argument, usually a host port).
+# Prints AETEST:<name>:PASS|FAIL markers and powers off.
+/bin/busybox --install -s /bin
+export PATH=/bin
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+mount -t devtmpfs dev /dev 2>/dev/null
+
+for m in virtio_mmio failover net_failover virtio_net af_packet; do
+    [ -f /lib/$m.ko ] && insmod /lib/$m.ko
+done
+
+AETEST=manual
+AEARG=
+for tok in $(cat /proc/cmdline); do
+    case "$tok" in
+        aetest=*) AETEST="${tok#aetest=}" ;;
+        aearg=*)  AEARG="${tok#aearg=}" ;;
+    esac
+done
+
+ok()  { echo "AETEST:$1:PASS"; }
+bad() { echo "AETEST:$1:FAIL"; }
+run() { name=$1; shift; if "$@"; then ok "$name"; else bad "$name"; fi; }
+
+static_ip() {
+    ip link set lo up
+    ip addr add 10.0.2.15/24 dev eth0 2>/dev/null
+    ip link set eth0 up
+    ip route add default via 10.0.2.2 2>/dev/null
+}
+
+do_dhcp() {
+    ip link set lo up
+    ip link set eth0 up
+    run dhcp udhcpc -i eth0 -n -q -t 5 -T 3
+}
+
+t_ping_gw()  { run ping_gw ping -c 3 -W 2 10.0.2.2; }
+t_ping_dns() { run ping_dns ping -c 2 -W 2 10.0.2.3; }
+t_dns()      { run dns nslookup "${DNSNAME:-example.com}" 10.0.2.3; }
+
+t_wget() {
+    run wget_host wget -q -O /tmp/out "http://10.0.2.2:$1/hello.txt"
+    echo "GOT:$(cat /tmp/out 2>/dev/null)"
+}
+
+t_wget_big() {
+    if wget -q -O /tmp/big "http://10.0.2.2:$1/big.bin"; then
+        echo "MD5:$(md5sum /tmp/big | cut -d' ' -f1) SIZE:$(wc -c < /tmp/big)"
+        ok wget_big
+    else
+        bad wget_big
+    fi
+}
+
+t_par() {
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        wget -q -O /tmp/par$i "http://10.0.2.2:$1/hello.txt" &
+    done
+    wait
+    n=$(cat /tmp/par* 2>/dev/null | grep -c hello-arm64emu-net)
+    echo "PAR:$n/10"
+    [ "$n" = 10 ] && ok par || bad par
+}
+
+t_halfclose() {
+    # guest closes mid-transfer; the stack must tear down and stay usable
+    wget -q -O - "http://10.0.2.2:$1/big.bin" 2>/dev/null | head -c 1000 >/tmp/hc
+    [ "$(wc -c < /tmp/hc)" = 1000 ] && ok halfclose || bad halfclose
+    wget -q -O /tmp/out "http://10.0.2.2:$1/hello.txt" && ok postclose || bad postclose
+}
+
+t_refused() {
+    START=$(cut -d. -f1 /proc/uptime)
+    nc -w 5 10.0.2.2 1 </dev/null >/dev/null 2>&1
+    RC=$?
+    END=$(cut -d. -f1 /proc/uptime)
+    echo "refused rc=$RC elapsed=$((END - START))s"
+    [ $RC -ne 0 ] && [ $((END - START)) -le 2 ] && ok refused || bad refused
+}
+
+t_upload() {
+    # push 2 MB to a host nc listener; host compares the md5
+    dd if=/dev/urandom of=/tmp/up.bin bs=1024 count=2048 2>/dev/null
+    echo "UPMD5:$(md5sum /tmp/up.bin | cut -d' ' -f1)"
+    run upload nc -w 5 10.0.2.2 "$1" </tmp/up.bin
+}
+
+t_udp_flood() {
+    i=0
+    while [ $i -lt 200 ]; do
+        nslookup flood$i.example.com 10.0.2.3 >/dev/null 2>&1
+        i=$((i+1))
+    done
+    ok udp_flood
+}
+
+case "$AETEST" in
+manual)
+    echo "AETEST:manual shell"
+    setsid sh -c 'exec sh </dev/ttyAMA0 >/dev/ttyAMA0 2>&1'
+    ;;
+ping_gw)     static_ip; t_ping_gw ;;
+dhcp)        do_dhcp ;;
+dns)         do_dhcp; t_dns ;;
+ping_ext)    do_dhcp; run ping_ext ping -c 2 -W 3 "${AEARG:-1.1.1.1}" ;;
+wget_host)   do_dhcp; t_wget "${AEARG:-8099}" ;;
+full)
+    # everything that needs only the host HTTP server on port AEARG
+    do_dhcp
+    run dhcp2 udhcpc -i eth0 -n -q -t 5 -T 3
+    t_ping_gw
+    t_ping_dns
+    t_dns
+    t_wget "${AEARG:-8099}"
+    t_wget_big "${AEARG:-8099}"
+    t_par "${AEARG:-8099}"
+    t_halfclose "${AEARG:-8099}"
+    t_refused
+    t_udp_flood
+    ;;
+upload)      static_ip; t_upload "${AEARG:-8098}" ;;
+nc_listen)
+    # hostfwd TCP target: banner + capture, five sequential connections
+    static_ip
+    echo "AETEST:nc_listen:READY"
+    for i in 1 2 3 4 5; do
+        printf 'hello-from-guest\n' | nc -l -p "${AEARG:-8080}" >/tmp/rx
+        echo "RX:$(cat /tmp/rx)"
+    done
+    ok nc_listen
+    ;;
+udp_echo)
+    # hostfwd UDP target. Deliberately timer-free: any guest `sleep` here
+    # would be fast-forwarded by the deterministic clock (WFI skips straight
+    # to the next armed timer), closing the listener before the host's
+    # datagram arrives in real time. Foreground nc blocks without a timer;
+    # the -e child reads one line, echoes it back, and records it. The host
+    # side bounds the wait with `timeout` on the emulator.
+    # Deliberately timer-free: a guest `sleep` would be fast-forwarded by
+    # the deterministic clock (WFI skips straight to the next armed timer),
+    # closing the window before the host's real-time datagram arrives.
+    # Blocking FIFO reads idle without timers; the datagram wakes them.
+    # nc learns the peer from the first datagram, so writing to its held-open
+    # stdin FIFO replies to the actual sender through the rule's socket.
+    static_ip
+    mkfifo /tmp/f_in /tmp/f_out
+    exec 7<>/tmp/f_in
+    nc -u -l -p "${AEARG:-8081}" </tmp/f_in 2>/dev/null | tee /tmp/urx >/tmp/f_out &
+    echo "AETEST:udp_echo:READY"
+    read -r line < /tmp/f_out
+    echo "URX:$line"
+    printf 'reply:%s\n' "$line" >&7
+    # timer-free settle so nc gets scheduled to transmit before poweroff
+    i=0; while [ $i -lt 5000 ]; do i=$((i+1)); done
+    ok udp_echo
+    ;;
+esac
+
+echo "AETEST:DONE"
+poweroff -f
