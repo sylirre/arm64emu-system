@@ -1,5 +1,20 @@
 # arm64emu — Incorrect Opcode Implementations & Other Bugs (TODO)
 
+> **Update 2026-07-18 (residual-gap batch):** §1.2 SQDMULH/SQRDMULH INT_MIN²
+> saturation is now *actually* fixed (the 2026-07-17 note below over-claimed —
+> three sites still used `2*a*b`; all now use the overflow-safe `a*b>>(esize-1)`
+> idiom, qemu-validated). §1.10 FMADD/FMLA are now fused (`__builtin_fma`, `-lm`;
+> JIT routes the family to the helper so jit==interp). §4 lax decodes: EXTR
+> (N/imms/bit21, closes the u32 shift UB), move-wide hw≥2/sf=0, ldst_register
+> opc3/size3, ldst_pair opc3 → UNDEF. §2.5 HVC/SMC now UNDEF at EL0. §2.1/§2.3
+> MMU rejects out-of-range VAs + honors TCR TBI0/1 + EPD0/1. §2.2 MMFR0
+> TGran64=0xF. §2.4 PC-alignment fault added (SP-alignment still deferred). §2.6
+> WFE event register (SEV/SEVL/WFE). §3.3 PL031 DR tick-offset (was double-count).
+> §3.4 GICv2 ITARGETSR banked IRQs read 0x01 ("GIC CPU mask not found" gone).
+> §3.5 virtio-blk overflow-safe range check. §3.7 virtio-9p short header →
+> Rlerror. FEAT_FP16 now advertised (ID_AA64PFR0=0x110022). Boots to userspace
+> shell; jit+pd consistency byte-identical @300M.
+
 > **Update 2026-07-17 (arm64chroot core backport):** §1.1 (NaN→INT_MIN
 > converts) fixed at all five sites (also mirrored into arm64chroot);
 > §1.2 (SQDMULH saturation), §1.3 (vector SSHR/USHR #64), §1.4

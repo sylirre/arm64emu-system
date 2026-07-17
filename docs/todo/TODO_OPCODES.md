@@ -1,5 +1,13 @@
 # arm64emu — Not-Implemented Instructions (TODO)
 
+> **Update 2026-07-18 (residual-gap batch):** **FEAT_FP16 is now implemented and
+> advertised** (ID_AA64PFR0=0x110022, FP/AdvSIMD nibbles=1; the half-precision
+> arithmetic surface was already present and is qemu-differential-tested by
+> arm64chroot's `fp16_*` suite). From §5, the lax decodes that "executed
+> something" are tightened to UNDEF (EXTR, move-wide hw/sf, ldst_register
+> opc3/size3, ldst_pair opc3). Remaining §2 extensions (DotProd, RDM, FCMA,
+> JSCVT, FHM, FLAGM, PAuth, BTI, MTE, MOPS, SVE/SME, BF16/I8MM) still stand.
+
 > **Update 2026-07-17 (arm64chroot core backport):** every §1 item is closed —
 > §1.1–1.7 by adopting arm64chroot's `exec_fpsimd.c` (which had worked this
 > audit) and §1.8 by the FPCR/FPSR sysreg cases; the file also brings the whole
