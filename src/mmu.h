@@ -47,7 +47,9 @@ bool mem_ifetch_slow(CPU *c, u64 va, u32 *insn_out);
 
 static inline bool mem_ifetch(CPU *c, u64 va, u32 *insn_out) {
     u64 page = va & ~0xfffULL;
-    if (g_fcache.host && g_fcache.page == page &&
+    /* A misaligned PC (only reachable via a bad indirect branch) takes the slow
+     * path, which raises a PC-alignment fault instead of fetching rotated bytes. */
+    if (g_fcache.host && g_fcache.page == page && !(va & 3) &&
         g_fcache.el0 == (u8)(c->el == 0) &&
         g_fcache.mmu == (u8)(c->sctlr[1] & 1)) {
         u32 v;

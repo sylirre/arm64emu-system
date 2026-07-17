@@ -81,13 +81,29 @@ static bool perm_ok(CPU *c, AccType acc, u8 ap, u8 uxn, u8 pxn) {
 static unsigned walk(CPU *c, u64 va, u64 *pa_page, u8 *ap, u8 *uxn, u8 *pxn) {
     Machine *m = c->m;
     u64 tcr = c->tcr[1];
-    u64 ttbr;
-    unsigned txsz;
-    if ((s64)va >= 0) { ttbr = c->ttbr0[1]; txsz = tcr & 0x3f; }
-    else              { ttbr = c->ttbr1[1]; txsz = (tcr >> 16) & 0x3f; }
+    /* Regime select by bit 55 (== bit 63 for any well-formed address; the bits
+     * in between are validated below). Honor TBIx: when the top-byte-ignore bit
+     * for the chosen regime is set, bits [63:56] are a tag and are excluded from
+     * both the range check and the walk (AArch64 AddrTop = 55). This keeps
+     * tagged EL0 pointers (Linux sets TBI0) on TTBR0 instead of misrouting them. */
+    unsigned sel  = (unsigned)((va >> 55) & 1);           /* 0 = TTBR0, 1 = TTBR1 */
+    unsigned tbi  = sel ? (unsigned)((tcr >> 38) & 1) : (unsigned)((tcr >> 37) & 1);
+    unsigned epd  = sel ? (unsigned)((tcr >> 23) & 1) : (unsigned)((tcr >> 7) & 1);
+    unsigned top  = tbi ? 55 : 63;
+    u64 ttbr = sel ? c->ttbr1[1] : c->ttbr0[1];
+    unsigned txsz = sel ? (unsigned)((tcr >> 16) & 0x3f) : (unsigned)(tcr & 0x3f);
     if (txsz < 16) txsz = 16;
     if (txsz > 39) txsz = 39;
     unsigned va_size = 64 - txsz;
+
+    if (epd) return FSC_TRANS_L0;                          /* table walks disabled for this regime */
+
+    /* Bits [top : va_size] must be a clean sign-extension of the region (all 0
+     * for TTBR0, all 1 for TTBR1); otherwise the VA is out of range and takes a
+     * level-0 translation fault instead of silently aliasing into the tables. */
+    u64 chk = (~0ULL << va_size);
+    if (top < 63) chk &= (1ULL << (top + 1)) - 1;         /* exclude the tag byte */
+    if ((va & chk) != (sel ? chk : 0ULL)) return FSC_TRANS_L0;
 
     /* starting level for 4 KB granule */
     unsigned n = (va_size - 12 + 8) / 9;
@@ -304,6 +320,10 @@ static u8 *host_page_ptr(Machine *m, u64 pa_page) {
 }
 
 bool mem_ifetch_slow(CPU *c, u64 va, u32 *insn_out) {
+    if (va & 3) {                       /* PC-alignment fault (EC 0x22), no ISS */
+        cpu_raise_sync(c, esr_make(EC_PC_ALIGN, 0), va);
+        return false;
+    }
     u64 pa;
     if (!mmu_translate(c, va, ACC_EXEC, &pa)) return false;
     u8 *hp = host_page_ptr(c->m, pa & ~0xfffULL);
