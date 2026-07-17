@@ -211,9 +211,10 @@ operand extraction, the ALU/memory operation — not on classifying the opcode.
 ### JIT (`-jit`, off by default)
 
 An opt-in basic-block JIT (ported from the arm64chroot sibling project)
-translates guest code to host x86-64 (an AArch64 backend is included but
-untested on hardware): **~350 MIPS (≈9.5×)** on the Linux-boot workload,
->99.8% of instructions native in steady state. The interpreter stays the
+translates guest code to host x86-64 (an AArch64 backend is included,
+validated under qemu-user emulation but untested on real hardware):
+**~370 MIPS (≈10×)** on the Linux-boot workload, >99.9% of instructions
+native in steady state. The interpreter stays the
 default and the reference — `make test-jit` requires byte-identical CPU
 state between the modes on deterministic boots. Design, full-system
 coherence (SMC store-tracking, block/context keying, IRQ safepoints) and

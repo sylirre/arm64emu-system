@@ -4,7 +4,9 @@
 # Build and run the assembly self-tests against the emulator.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-EMU="$ROOT/arm64emu"
+# AE_EMU: alternate emulator binary; AE_RUNNER: launcher prefix (e.g.
+# qemu-aarch64 for the cross-built AArch64-backend binary).
+EMU="${AE_EMU:-$ROOT/arm64emu}"
 ASM="$ROOT/tests/asm"
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
@@ -33,8 +35,8 @@ for src in "$ASM"/*.S; do
     # platform_build runs), so run it as firmware with -console virtio instead.
     # EMU_FLAGS: extra emulator flags (e.g. EMU_FLAGS=-jit for the JIT suite).
     case "$name" in
-        *_vcon) run=("$EMU" ${EMU_FLAGS:-} -bios "$bin" -console virtio -maxinsn 100000) ;;
-        *)      run=("$EMU" ${EMU_FLAGS:-} -bin "$bin@$LOAD" -maxinsn 100000) ;;
+        *_vcon) run=(${AE_RUNNER:-} "$EMU" ${EMU_FLAGS:-} -bios "$bin" -console virtio -maxinsn 100000) ;;
+        *)      run=(${AE_RUNNER:-} "$EMU" ${EMU_FLAGS:-} -bin "$bin@$LOAD" -maxinsn 100000) ;;
     esac
     res="$("${run[@]}" 2>&1 | grep -oE 'x0=0x[0-9a-f]+' | head -1)"
     if [ "$res" = "x0=0x0" ]; then

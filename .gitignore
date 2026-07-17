@@ -1,5 +1,6 @@
 # build artifacts
 /arm64emu
+/arm64emu-a64
 *.o
 *.d
 /build/

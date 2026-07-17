@@ -1,16 +1,18 @@
 # The JIT (`-jit`)
 
 Opt-in, off by default. Translates guest basic blocks to host native code
-(x86-64 today; an AArch64 backend is ported but untested on real hardware).
+(x86-64 first-class; the AArch64 backend passes the full suite and
+byte-identical consistency checkpoints under qemu-user emulation —
+`make test-jit-a64` — but has not run on real ARM hardware).
 The interpreter remains the default execution mode and the reference
 semantics: anything the translator does not handle inline executes by
 calling `exec_a64`, and `make test-jit` requires interpreter-vs-JIT
 byte-identical CPU state on deterministic boots.
 
 Measured on the firmware+Linux boot used by `tests/run_jit_consist.sh`:
-~36 MIPS interpreted, ~350 MIPS with `-jit` (≈9.5×). Steady state runs
->99.8% of instructions natively; the remaining helper residue is
-exclusives, DC/IC maintenance and TLBI.
+~36 MIPS interpreted, ~370 MIPS with `-jit` (≈10×). Steady state runs
+>99.9% of instructions natively; the remaining helper residue
+(~0.03%) is IC IVAU, TLBI and cold sysreg moves.
 
 Ported from the arm64chroot user-mode emulator (same author; its CPU core
 is a copy of this repo's). Its `docs/jit.md` describes the pipeline in
@@ -105,12 +107,18 @@ the block by definition (context synchronization = re-dispatch). SVC/
 HVC/BRK/ERET run through `exec_a64` and end the block; the exception has
 already vectored when the helper returns.
 
-**Exclusives stay in the interpreter.** The donor inlines value-CAS
-monitor semantics (its CPU has `excl_val`); this emulator's monitor is
-address-match (`decode.c ldst_exclusive`), and bit-identical behavior
-wins over speed here. LDAR/STLR translate as plain accesses (exactly what
-the in-order interpreter does); the `o2=1,o1=1` CAS space stays on
-`exec_a64` so decode.c remains authoritative for it.
+**Exclusives.** The donor's value-CAS emitters were discarded (its CPU
+has `excl_val`; this emulator's monitor is address-match) and replaced
+with a direct lowering of `decode.c ldst_exclusive`, quirks included:
+the monitor compares address only (no size check), a faulting `ST*XR`
+leaves the monitor set with Rs unwritten, and LDXP commits its
+registers all-or-nothing. Loads are ordinary probed IR ops plus monitor
+writes; stores bracket ordinary probed stores between a monitor-compare
+(branch to fail) and a status-write/monitor-clear, so the D-TLB probe,
+SMC write-refusal and fault-exit machinery are reused unchanged.
+LDAR/STLR translate as plain accesses (exactly what the in-order
+interpreter does); the `o2=1,o1=1` CAS space stays on `exec_a64` so
+decode.c remains authoritative for it.
 
 ## Known, documented deviations from the interpreter
 
@@ -165,3 +173,8 @@ checkpoints all sit inside the UEFI phase, and a translation bug in an
 instruction UEFI doesn't lean on sails straight past them — a mistyped
 sysreg encoding (CNTVCT misread as DCZID, freezing the guest's clock)
 once passed 5/5 checkpoints and was caught only by this comparison.
+
+`make test-jit-a64` cross-builds the AArch64-backend binary (clang +
+lld + the Debian cross libc) and runs the suite plus a consistency
+checkpoint under qemu-user — the standing guard that keeps the second
+backend executable, not merely compilable.

@@ -18,7 +18,8 @@
 #      AE_POINTS overrides the checkpoint list.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-EMU="$ROOT/arm64emu"
+# AE_EMU / AE_RUNNER: alternate binary and launcher prefix (qemu-aarch64).
+EMU="${AE_EMU:-$ROOT/arm64emu}"
 BIOS=${AE_BIOS:-/usr/share/qemu-efi-aarch64/QEMU_EFI.fd}
 KERNEL=${AE_KERNEL:-$HOME/Image.gz}
 INITRD=${AE_INITRD:-$HOME/initrd}
@@ -31,10 +32,10 @@ POINTS=${AE_POINTS:-"1000000 4000000 16000000 64000000 300000000"}
 OUT="$(mktemp -d)"; trap 'rm -rf "$OUT"' EXIT
 pass=0; fail=0
 for N in $POINTS; do
-    "$EMU" -bios "$BIOS" -kernel "$KERNEL" -initrd "$INITRD" \
+    ${AE_RUNNER:-} "$EMU" -bios "$BIOS" -kernel "$KERNEL" -initrd "$INITRD" \
         -append console=ttyAMA0 -maxinsn "$N" \
         </dev/null >"$OUT/i.out" 2>"$OUT/i.err" &
-    "$EMU" -jit -bios "$BIOS" -kernel "$KERNEL" -initrd "$INITRD" \
+    ${AE_RUNNER:-} "$EMU" -jit -bios "$BIOS" -kernel "$KERNEL" -initrd "$INITRD" \
         -append console=ttyAMA0 -maxinsn "$N" \
         </dev/null >"$OUT/j.out" 2>"$OUT/j.err" &
     wait
