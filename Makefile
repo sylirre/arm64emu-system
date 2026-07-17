@@ -9,11 +9,14 @@ CSTD    ?= -std=c11
 OPT     ?= -O2
 WARN     = -Wall -Wextra -Wno-unused-parameter
 DEFS     = -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
-# -fno-math-errno lets __builtin_sqrt/fabs inline to hardware FP ops, so the
-# scalar-FP interpreter needs no libm (keeping the build libc-only, no -lm).
+# -fno-math-errno lets __builtin_sqrt/fabs inline to hardware FP ops without
+# errno handling. libm (-lm) is linked for __builtin_fma/fmaf: the interpreter's
+# FMADD/FMLA use a genuinely fused multiply-add (single rounding, matching
+# AArch64), which the compiler turns into a hardware FMA under -march=native and
+# otherwise into a libm fma() call. Building with -march=native drops the call.
 CFLAGS  ?= $(CSTD) $(OPT) $(WARN) $(DEFS) -Isrc -fno-math-errno -g
 LDFLAGS ?=
-LDLIBS   =
+LDLIBS   = -lm
 
 # ---- emulator sources ----
 SRC := $(wildcard src/*.c) $(wildcard src/devices/*.c) $(wildcard src/net/*.c) $(wildcard src/jit/*.c)
