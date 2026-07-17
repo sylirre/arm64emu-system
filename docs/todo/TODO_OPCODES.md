@@ -1,5 +1,14 @@
 # arm64emu — Not-Implemented Instructions (TODO)
 
+> **Update 2026-07-17 (arm64chroot core backport):** every §1 item is closed —
+> §1.1–1.7 by adopting arm64chroot's `exec_fpsimd.c` (which had worked this
+> audit) and §1.8 by the FPCR/FPSR sysreg cases; the file also brings the whole
+> unadvertised FEAT_FP16 arithmetic surface. From §2, **FEAT_LSE is now
+> implemented and advertised** (`ISAR0=0x100212120`, qemu-oracle-validated
+> `tests/asm/m13_lse.S`, kernel boots with "LSE atomic instructions" detected)
+> plus LDAPR (the LSE-space encoding only), and `ldst_literal` V=1 (§5's
+> SIMD&FP literal) now loads correctly. The rest of §2, §3–§6 still stand.
+
 Static survey of `src/decode.c`, `src/exec_fpsimd.c`, `src/sysreg.c`, 2026-07-03
 (HEAD 2563105). Organized by risk: what can UNDEF *today* under the features the
 emulator advertises, then what is safely absent because the ID registers don't

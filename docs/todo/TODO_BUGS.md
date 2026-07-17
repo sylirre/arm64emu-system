@@ -1,5 +1,12 @@
 # arm64emu — Incorrect Opcode Implementations & Other Bugs (TODO)
 
+> **Update 2026-07-17 (arm64chroot core backport):** §1.1 (NaN→INT_MIN
+> converts) fixed at all five sites (also mirrored into arm64chroot);
+> §1.2 (SQDMULH saturation), §1.3 (vector SSHR/USHR #64), §1.4
+> (SADDLV/UADDLV), the SUQADD 64-bit corner and scalar FMAX/FMIN NaN
+> propagation are fixed by adopting arm64chroot's `exec_fpsimd.c`. The
+> CAS-space "runs as LDAR" hazard is gone: CAS/CASP/LSE memops are real now.
+
 Full-source correctness audit, 2026-07-03 (HEAD 2563105). Every file in `src/`
 and `src/devices/` was read. Companion docs: `TODO_OPCODES.md`
 (unimplemented encodings), `TODO_OPTIMIZATIONS.md` (performance).
