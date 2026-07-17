@@ -2815,6 +2815,15 @@ static void emit_atomic(BE *be, const IRBlock *ir, int i) {
     const IROp *o = &ir->ops[i];
     materialize_flags(be);
     sync_all(be);
+    if (o->imm) {                                /* CAS: value compare */
+        int ho = ra_use(be, o->a);               /* old (loaded from memory) */
+        int he = ra_use(be, o->b);               /* expected */
+        op_rr(e, o->w, 0x3B, ho, he);            /* cmp old, expected */
+        be->at_f0 = jcc_fwd(e, CC_NE);
+        be->at_f1 = NULL;
+        be->fl = FL_MEM;
+        return;
+    }
     int ha = ra_use(be, o->a);                   /* base = monitor address */
     ld32(e, RAX, R14, (s32)offsetof(CPU, excl_valid));
     op_rr(e, 0, 0x85, RAX, RAX);                 /* test eax,eax */
@@ -2829,6 +2838,21 @@ static void emit_atomic_end(BE *be, const IROp *o) {
     Emit *e = be->e;
     sync_all(be);
     invalidate_all(be);
+    if (o->imm) {                                /* CAS: Rs = old on both paths */
+        if (o->dst != VREG_ZERO) {               /* old is a temp (spill slot) */
+            ld64(e, RAX, R15, v_spill(o->a));
+            st64(e, RAX, R14, v_home(o->dst));
+        }
+        u8 *done = jmp_fwd(e);
+        fwd_here(e, be->at_f0);
+        if (o->dst != VREG_ZERO) {
+            ld64(e, RAX, R15, v_spill(o->a));
+            st64(e, RAX, R14, v_home(o->dst));
+        }
+        fwd_here(e, done);
+        be->fl = FL_MEM;
+        return;
+    }
     if (o->dst != VREG_ZERO)
         st_imm_r14(e, v_home(o->dst), 0);        /* Rs = 0: stored */
     u8 *done = jmp_fwd(e);

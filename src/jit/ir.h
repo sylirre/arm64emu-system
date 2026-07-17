@@ -124,13 +124,17 @@ enum {
      * No faults. */
     IRO_VOP,
 
-    IRO_ATOMIC,             /* store-exclusive bracket open: a = base.
-                             * Compares the monitor (excl_valid/excl_addr)
-                             * and branches to the matching ATOMIC_END's
-                             * fail label; the probed IRO_ST(s) in between
-                             * are ordinary ops. */
-    IRO_ATOMIC_END,         /* bracket close: dst = status reg (0 = stored,
-                             * 1 = no monitor); clears excl_valid. */
+    IRO_ATOMIC,             /* atomic bracket open. imm selects the mode:
+                             * imm=0 store-exclusive — a = base, compares the
+                             * monitor (excl_valid/excl_addr) and branches to
+                             * the matching ATOMIC_END fail label;
+                             * imm=1 CAS — a = old (loaded), b = expected,
+                             * w = width, emits `cmp a,b; b.ne fail`.
+                             * The probed IRO_ST(s) in between are ordinary. */
+    IRO_ATOMIC_END,         /* bracket close. imm=0 exclusive: dst = status reg
+                             * (0 = stored, 1 = no monitor), clears excl_valid.
+                             * imm=1 CAS: a = old, dst = Rs; writes Rs = old on
+                             * both join paths, touches no monitor. */
 
     IRO_N_
 };

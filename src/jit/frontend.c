@@ -566,12 +566,89 @@ static int fe_fpsimd(IRBlock *ir, u32 insn, u64 pc) {
     return 1;
 }
 
+/* Inline the LSE atomic memory operations (decode.c ldst_atomic is the
+ * reference). This repo's LSE is a plain single-CPU read-modify-write through
+ * the MMU — a generated load->ALU->store is atomic w.r.t. the guest and
+ * byte-identical to the interpreter, so no host LOCK/fence is needed and no
+ * backend change: everything lowers to existing probed IR ops. The store is an
+ * ordinary IRO_ST, so a store fault exits the block with the guest pc baked in
+ * and Rt still unwritten — decode.c re-runs the whole insn. Register ordering
+ * mirrors the interpreter (base snapshot first so Rt may alias Rn; Rt written
+ * LAST so it may alias Rs). Byte/half *signed* min/max and CAS/CASP are left on
+ * the CALL1 helper (return 0). Returns 1 when it emitted the op. */
+static int fe_lse_memop(IRBlock *ir, u32 insn, u64 pc) {
+    unsigned szl = insn >> 30, o3 = (insn >> 15) & 1, opc = (insn >> 12) & 7;
+    unsigned rs = (insn >> 16) & 31, rn = (insn >> 5) & 31, rt = insn & 31;
+    int w = (szl == 3);
+
+    if (o3 && opc != 0) {                        /* SWP is o3&opc==0; else... */
+        if (opc == 4) {                          /* LDAPR: plain load-acquire */
+            put_ld(ir, rsp(rn), 0, rt, szl, 0, w, pc);
+            ir->ninsns++;
+            return 1;
+        }
+        return 0;                                /* unallocated: helper */
+    }
+
+    /* base -> TMP2 (Rt may alias Rn); old -> TMP1; result -> TMP0. */
+    ir_put(ir, IRO_MOV, 1, VREG_TMP2, rsp(rn), 0, 0, 0, 0);
+    put_ld_tmp(ir, VREG_TMP2, 0, 1, szl, 0, w, pc);   /* TMP1 = old, zero-ext */
+
+    if (o3) {                                    /* SWP: store Rs, return old */
+        put_st(ir, VREG_TMP2, 0, rx(rs), szl, pc);
+    } else if (opc <= 3) {                        /* LDADD/LDCLR/LDEOR/LDSET */
+        static const u8 aop[4] = { IRO_ADD, IRO_BIC, IRO_EOR, IRO_ORR };
+        put_alu(ir, aop[opc], (u8)w, VREG_TMP0, VREG_TMP1, rx(rs));
+        put_st(ir, VREG_TMP2, 0, VREG_TMP0, szl, pc);
+    } else {                                      /* LDSMAX/LDSMIN/LDUMAX/LDUMIN */
+        if (szl < 2) return 0;                    /* byte/half signed-safe: helper */
+        /* result = cc ? old : Rs, cc comparing old vs Rs (SUBS old,Rs). */
+        static const u8 cc[4] = { 12, 11, 8, 3 }; /* GT, LT, HI, LO */
+        put_alu(ir, IRO_SUBS, (u8)w, VREG_ZERO, VREG_TMP1, rx(rs));
+        ir_put(ir, IRO_CSEL, (u8)w, VREG_TMP0, VREG_TMP1, rx(rs), cc[opc - 4], 0, 0);
+        put_st(ir, VREG_TMP2, 0, VREG_TMP0, szl, pc);
+    }
+    if (rt != 31)
+        ir_put(ir, IRO_MOV, 1, (u8)rt, VREG_TMP1, 0, 0, 0, 0);  /* Rt = old */
+    ir->ninsns++;
+    return 1;
+}
+
+/* Inline CAS/CASA/CASL/CASAL (decode.c ldst_cas is the reference; single-CPU,
+ * so a load / compare / conditional store is atomic and matches the interpreter).
+ * Reuses the store-exclusive bracket generalized for a value compare (IRO_ATOMIC
+ * with imm=1: `cmp old,expected; b.ne fail`), with the probed store in between
+ * and IRO_ATOMIC_END writing Rs=old on both join paths (never before the store,
+ * so a faulting store leaves Rs unchanged exactly like decode.c). CASP stays on
+ * the helper. Returns 1. */
+static int fe_lse_cas(IRBlock *ir, u32 insn, u64 pc) {
+    unsigned szl = insn >> 30;
+    unsigned rs = (insn >> 16) & 31, rn = (insn >> 5) & 31, rt = insn & 31;
+    u8 w = (u8)(szl == 3);
+
+    ir_put(ir, IRO_MOV, 1, VREG_TMP2, rsp(rn), 0, 0, 0, 0);  /* base (Rt may alias Rn) */
+    put_ld_tmp(ir, VREG_TMP2, 0, 1, szl, 0, w, pc);          /* TMP1 = old, zero-ext */
+
+    u8 exp;                                                   /* expected = Rs (& emask) */
+    if (szl < 2) {
+        ir_put(ir, IRO_ANDI, 1, VREG_TMP0, rx(rs), 0, 0,
+               (szl == 0) ? 0xffull : 0xffffull, 0);
+        exp = VREG_TMP0;
+    } else {
+        exp = rx(rs);
+    }
+    ir_put(ir, IRO_ATOMIC, w, VREG_ZERO, VREG_TMP1, exp, 0, 1, 0); /* cmp; b.ne fail */
+    put_st(ir, VREG_TMP2, 0, rx(rt), szl, pc);                     /* store new on match */
+    ir_put(ir, IRO_ATOMIC_END, 1, rx(rs), VREG_TMP1, 0, 0, 1, 0);  /* Rs = old */
+    ir->ninsns++;
+    return 1;
+}
+
 /* Inline exclusives (decode.c ldst_exclusive is the reference: an
  * address-match monitor with NO size compare on store — stay
  * bug-compatible). Only the o2=0 space: LDAR/STLR are plain accesses in
- * fe_insn, and the o1=1 CAS/CASP spaces plus the LSE memops (both real in
- * decode.c since the arm64chroot backport) stay on the CALL1 helper —
- * fe_ldst_extra rejects bits[11:10]==0 so they can't false-match.
+ * fe_insn, CASP stays on the CALL1 helper, and CAS is handled above —
+ * fe_ldst_extra rejects bits[11:10]==0 so LSE memops can't false-match.
  *
  * Loads lower to ordinary probed IR ops plus monitor writes (a load fault
  * exits before the monitor is touched, like the interpreter's early
@@ -581,6 +658,10 @@ static int fe_fpsimd(IRBlock *ir, u32 insn, u64 pc) {
  * clear) — a store fault exits the block with the monitor still set and
  * Rs unwritten. Counted in ninsns here like any inline insn. */
 static int fe_atomic(IRBlock *ir, u32 insn, u64 pc) {
+    if ((insn & 0x3B200C00u) == 0x38200000u)     /* LSE atomic memops */
+        return fe_lse_memop(ir, insn, pc);
+    if ((insn & 0x3FA00000u) == 0x08A00000u)     /* CAS/CASA/CASL/CASAL (o2=1,o1=1) */
+        return fe_lse_cas(ir, insn, pc);
     if ((insn & 0x3F800000u) != 0x08000000u) return 0;   /* o2=0 exclusives */
     if (((insn >> 21) & 1) && !(insn >> 31)) return 0;   /* CASP (o1=1, bit31=0):
                                                           * real in decode.c now,

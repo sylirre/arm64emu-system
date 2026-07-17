@@ -1399,6 +1399,17 @@ static void emit_atomic(BE *be, const IRBlock *ir, int i) {
     const IROp *o = &ir->ops[i];
     materialize_flags(be);
     sync_all(be);
+    if (o->imm) {                                /* CAS: value compare */
+        int ho = ra_use(be, o->a);               /* old (loaded from memory) */
+        int he = ra_use(be, o->b);               /* expected */
+        /* SUBS WZR/XZR, old, expected  (w selects 32/64-bit compare) */
+        ei(e, (o->w ? 0xEB00001Fu : 0x6B00001Fu) |
+              ((u32)he << 16) | ((u32)ho << 5));
+        be->at_f0 = bcond_fwd(e, 1);             /* b.ne fail */
+        be->at_f1 = NULL;
+        be->fl = FL_MEM;
+        return;
+    }
     int ha = ra_use(be, o->a);                   /* base = monitor address */
     ei(e, enc_ldr(2, 16, 28, (unsigned)offsetof(CPU, excl_valid)));
     ei(e, 0x7100001Fu | (16u << 5));             /* cmp w16, #0 */
@@ -1413,6 +1424,21 @@ static void emit_atomic_end(BE *be, const IROp *o) {
     Emit *e = be->e;
     sync_all(be);
     invalidate_all(be);
+    if (o->imm) {                                /* CAS: Rs = old on both paths */
+        if (o->dst != VREG_ZERO) {               /* old is a temp (R27 spill) */
+            ei(e, enc_ldr(3, 16, 27, (unsigned)v_spill(o->a)));
+            ei(e, enc_str(3, 16, 28, (unsigned)v_home(o->dst)));
+        }
+        u8 *done = b_fwd(e);
+        fwd_here(e, be->at_f0);
+        if (o->dst != VREG_ZERO) {
+            ei(e, enc_ldr(3, 16, 27, (unsigned)v_spill(o->a)));
+            ei(e, enc_str(3, 16, 28, (unsigned)v_home(o->dst)));
+        }
+        fwd_here(e, done);
+        be->fl = FL_MEM;
+        return;
+    }
     if (o->dst != VREG_ZERO)
         ei(e, enc_str(3, 31, 28, (unsigned)v_home(o->dst)));   /* xzr: 0 */
     u8 *done = b_fwd(e);
