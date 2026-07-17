@@ -443,6 +443,94 @@ static bool vreg_store(CPU *c, unsigned Vt, u64 va, unsigned bytes) {
     return mem_write(c, va, bytes, c->v[Vt].d[0]);
 }
 
+/* ============ ARMv8.1-A LSE atomics ============
+ * Atomic memory operations (LDADD/LDCLR/LDEOR/LDSET/LDSMAX/LDSMIN/LDUMAX/
+ * LDUMIN and SWP) plus Compare-and-Swap (CAS/CASP) and LDAPR. Modern glibc
+ * selects these via HWCAP_ATOMICS; -march=armv8.1-a+ code uses them
+ * unconditionally. Ported from arm64chroot's host-__atomic implementation,
+ * simplified for this single-CPU in-order interpreter: a plain read-modify-
+ * write through the MMU is architecturally atomic here, and the A/R
+ * acquire/release bits need no fences. A fault from either access aborts
+ * the whole instruction with no register update (mem_read/mem_write raise
+ * the data abort). Alignment is not checked, matching the exclusives below;
+ * the compare-fail path of CAS skips the architectural write-permission
+ * check (documented laxity, same family as TODO_OPCODES §5). */
+
+static void ldst_atomic(CPU *c, u32 insn) {
+    unsigned size = BITS(31, 30);
+    unsigned Rs = BITS(20, 16), o3 = BIT(15), opc = BITS(14, 12);
+    unsigned Rn = BITS(9, 5), Rt = BITS(4, 0);
+    unsigned bytes = 1u << size, esize = 8u * bytes;
+    u64 va = reg_xsp(c, Rn);
+
+    /* o3==1 is SWP (opc==0) or LDAPR (opc==4); other opc are LD<op>. */
+    if (o3 && opc != 0) {
+        if (opc == 4) {                          /* LDAPR: load-acquire RCpc */
+            u64 v;
+            if (mem_read(c, va, bytes, &v)) set_x(c, Rt, v);
+            return;
+        }
+        undefined(c, insn);
+        return;
+    }
+
+    u64 emask = (bytes == 8) ? ~0ULL : ((1ULL << esize) - 1);
+    u64 operand = reg_x(c, Rs) & emask, old, res;
+    if (!mem_read(c, va, bytes, &old)) return;
+    if (o3) {
+        res = operand;                                            /* SWP */
+    } else {
+        s64 so = (s64)sign_extend(old, esize), sn = (s64)sign_extend(operand, esize);
+        switch (opc) {
+            case 0: res = old + operand; break;                   /* LDADD  */
+            case 1: res = old & ~operand; break;                  /* LDCLR  */
+            case 2: res = old ^ operand; break;                   /* LDEOR  */
+            case 3: res = old | operand; break;                   /* LDSET  */
+            case 4: res = (so > sn) ? old : operand; break;       /* LDSMAX */
+            case 5: res = (so < sn) ? old : operand; break;       /* LDSMIN */
+            case 6: res = (old > operand) ? old : operand; break; /* LDUMAX */
+            default: res = (old < operand) ? old : operand; break;/* LDUMIN */
+        }
+    }
+    if (!mem_write(c, va, bytes, res & emask)) return;
+    set_x(c, Rt, old);   /* ST<op> forms use Rt==31 and discard */
+}
+
+/* CAS/CASA/CASL/CASAL: compare Rs, swap Rt, return old in Rs. */
+static void ldst_cas(CPU *c, u32 insn) {
+    unsigned size = BITS(31, 30);
+    unsigned Rs = BITS(20, 16), Rn = BITS(9, 5), Rt = BITS(4, 0);
+    unsigned bytes = 1u << size;
+    u64 emask = (bytes == 8) ? ~0ULL : ((1ULL << (8u * bytes)) - 1);
+    u64 va = reg_xsp(c, Rn), old;
+    if (!mem_read(c, va, bytes, &old)) return;
+    if (old == (reg_x(c, Rs) & emask)) {
+        if (!mem_write(c, va, bytes, reg_x(c, Rt) & emask)) return;
+    }
+    set_x(c, Rs, old);
+}
+
+/* CASP/CASPA/CASPL/CASPAL: 2-register compare-and-swap (Rs:Rs+1 vs Rt:Rt+1).
+ * sz bit30: 0=two 32-bit words (8-byte total), 1=two 64-bit (16-byte). The
+ * pair is naturally aligned, so it never crosses a page: once the first
+ * write succeeds the second cannot fault. */
+static void ldst_casp(CPU *c, u32 insn) {
+    bool sz = BIT(30);
+    unsigned Rs = BITS(20, 16), Rn = BITS(9, 5), Rt = BITS(4, 0);
+    unsigned bytes = sz ? 8 : 4;
+    u64 emask = sz ? ~0ULL : 0xffffffffULL;
+    u64 va = reg_xsp(c, Rn), lo, hi;
+    if (!mem_read(c, va, bytes, &lo)) return;
+    if (!mem_read(c, va + bytes, bytes, &hi)) return;
+    if (lo == (reg_x(c, Rs) & emask) && hi == (reg_x(c, Rs + 1) & emask)) {
+        if (!mem_write(c, va, bytes, reg_x(c, Rt) & emask)) return;
+        if (!mem_write(c, va + bytes, bytes, reg_x(c, Rt + 1) & emask)) return;
+    }
+    set_x(c, Rs, lo);
+    set_x(c, Rs + 1, hi);
+}
+/* ============ end LSE atomics ============ */
+
 static void ldst_register(CPU *c, u32 insn) {
     unsigned size = BITS(31, 30), opc = BITS(23, 22);
     unsigned Rn = BITS(9, 5), Rt = BITS(4, 0);
@@ -465,7 +553,11 @@ static void ldst_register(CPU *c, u32 insn) {
     int wb = 0;          /* 0 none, 1 post, 2 pre */
     if (BIT(24)) {                              /* unsigned immediate offset */
         va = base + ((u64)BITS(21, 10) << scale);
-    } else if (BIT(21)) {                       /* register offset */
+    } else if (BIT(21)) {                       /* register offset or atomic */
+        if (BITS(11, 10) == 0 && !V) {          /* LSE atomic memory operation */
+            ldst_atomic(c, insn);
+            return;
+        }
         if (BITS(11, 10) != 2) { undefined(c, insn); return; }
         va = base + ldst_extended_offset(c, insn, scale);
     } else {
@@ -555,6 +647,14 @@ static void ldst_exclusive(CPU *c, u32 insn) {
     unsigned bytes = 1u << size;
     u64 va = reg_xsp(c, Rn);
 
+    if (o2 && o1) {                            /* CAS/CASA/CASL/CASAL (LSE) */
+        ldst_cas(c, insn);
+        return;
+    }
+    if (!o2 && o1 && BIT(31) == 0) {           /* CASP/CASPA/CASPL/CASPAL (LSE) */
+        ldst_casp(c, insn);
+        return;
+    }
     if (o2) {                                  /* LDAR / STLR (ordered, non-exclusive) */
         if (L) { u64 v; if (mem_read(c, va, bytes, &v)) set_x(c, Rt, v); }
         else mem_write(c, va, bytes, reg_x(c, Rt));

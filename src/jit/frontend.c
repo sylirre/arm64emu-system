@@ -569,9 +569,9 @@ static int fe_fpsimd(IRBlock *ir, u32 insn, u64 pc) {
 /* Inline exclusives (decode.c ldst_exclusive is the reference: an
  * address-match monitor with NO size compare on store — stay
  * bug-compatible). Only the o2=0 space: LDAR/STLR are plain accesses in
- * fe_insn, and the o2=1,o1=1 CAS space must stay on the helper (decode.c's
- * lenient o2 branch runs it as LDAR/STLR). LSE memops are absent from
- * decode.c and never translate.
+ * fe_insn, and the o1=1 CAS/CASP spaces plus the LSE memops (both real in
+ * decode.c since the arm64chroot backport) stay on the CALL1 helper —
+ * fe_ldst_extra rejects bits[11:10]==0 so they can't false-match.
  *
  * Loads lower to ordinary probed IR ops plus monitor writes (a load fault
  * exits before the monitor is touched, like the interpreter's early
@@ -582,6 +582,9 @@ static int fe_fpsimd(IRBlock *ir, u32 insn, u64 pc) {
  * Rs unwritten. Counted in ninsns here like any inline insn. */
 static int fe_atomic(IRBlock *ir, u32 insn, u64 pc) {
     if ((insn & 0x3F800000u) != 0x08000000u) return 0;   /* o2=0 exclusives */
+    if (((insn >> 21) & 1) && !(insn >> 31)) return 0;   /* CASP (o1=1, bit31=0):
+                                                          * real in decode.c now,
+                                                          * stays on the helper */
     unsigned szl = insn >> 30;                   /* 00..11 = 1..8 bytes */
     unsigned bytes = 1u << szl;
     int L = (insn >> 22) & 1, o1 = (insn >> 21) & 1;
