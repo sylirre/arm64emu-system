@@ -174,6 +174,26 @@ _start:
     fcvtzu  w0, s1, #1                  /* trunc(3.0 * 2) = 6 */
     CKX     x0, 6, 33
 
+    /* FCVTZS/FCVTZU of a NaN must yield 0 (FPToFixed), matching hardware, qemu
+     * and the interpreter — the x86 JIT NaN-gates before cvttsd2si, which would
+     * otherwise return the 0x80000000... integer-indefinite. */
+    ldr     x4, =0x7ff8000000000000     /* quiet NaN (double) */
+    fmov    d0, x4
+    fcvtzs  x0, d0
+    CKX     x0, 0, 34
+    fcvtzu  x0, d0
+    CKX     x0, 0, 35
+    fcvtzs  w0, d0
+    CKX     x0, 0, 36
+    fcvtzu  w0, d0
+    CKX     x0, 0, 37
+    movz    w4, #0x7fc0, lsl #16        /* single quiet NaN 0x7fc00000 */
+    fmov    s1, w4
+    fcvtzs  x0, s1
+    CKX     x0, 0, 38
+    fcvtzu  w0, s1
+    CKX     x0, 0, 39
+
     movz    x0, #0
     hlt     #0
 fail:
