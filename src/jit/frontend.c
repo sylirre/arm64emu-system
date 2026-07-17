@@ -1548,6 +1548,49 @@ static int fe_insn(IRBlock *ir, const PDEnt *e, u64 pc) {
                            offsetof(CPU, excl_valid), 0);
                     break;
                 }
+                if ((insn & 0xFFFFFFE0u) == 0xD50B7B20u) {   /* DC CVAU, Xt */
+                    /* A no-op in sysreg.c (flat memory; I-cache coherence
+                     * is store-tracking's job) with no EL guard and no
+                     * fault path — emit nothing. One per cache line of
+                     * every executable page the guest faults in, so
+                     * dropping the helper + block-end matters. */
+                    break;
+                }
+                if (!g_rtclock &&
+                    (insn & 0xFFFFFF00u) == 0xD53BE000u && ((insn >> 5) & 7) <= 2) {
+                    /* CNTFRQ/CNTPCT/CNTVCT_EL0 (op2 = 0/1/2), deterministic
+                     * clock only: pure functions of CPU fields (timer.c
+                     * gt_count = icount + timer_skip [- cntvoff]). Memory
+                     * icount mid-block excludes the natively-retired batch,
+                     * and ir->ninsns here is exactly that batch, so the sum
+                     * is the exact architectural count — with -rt the JIT
+                     * is off anyway, but keep the helper authoritative. */
+                    unsigned op2 = (insn >> 5) & 7;
+                    if (rt != 31) {
+                        if (op2 == 0) {                  /* CNTFRQ_EL0 */
+                            ir_put(ir, IRO_CPULD, 1, (u8)rt, VREG_ZERO, 0, 0,
+                                   offsetof(CPU, cntfrq), 0);
+                        } else {                         /* CNTPCT / CNTVCT */
+                            ir_put(ir, IRO_CPULD, 1, (u8)rt, VREG_ZERO, 0, 0,
+                                   offsetof(CPU, icount), 0);
+                            if (ir->ninsns)
+                                put_alui(ir, IRO_ADDI, 1, (u8)rt, (u8)rt,
+                                         ir->ninsns);
+                            ir_put(ir, IRO_CPULD, 1, VREG_TMP0, VREG_ZERO,
+                                   0, 0, offsetof(CPU, timer_skip), 0);
+                            put_alu(ir, IRO_ADD, 1, (u8)rt, (u8)rt,
+                                    VREG_TMP0);
+                            if (op2 == 2) {              /* virtual offset */
+                                ir_put(ir, IRO_CPULD, 1, VREG_TMP0,
+                                       VREG_ZERO, 0, 0,
+                                       offsetof(CPU, cntvoff), 0);
+                                put_alu(ir, IRO_SUB, 1, (u8)rt, (u8)rt,
+                                        VREG_TMP0);
+                            }
+                        }
+                    }
+                    break;
+                }
                 if ((insn & 0xFFFFFFE0u) == 0xD53B00E0u) {   /* MRS Xt, DCZID_EL0 */
                     if (rt != 31)                            /* BS=4 (64B) */
                         ir_put(ir, IRO_MOVI, 1, (u8)rt, 0, 0, 0, 4, 0);
