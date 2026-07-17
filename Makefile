@@ -16,7 +16,7 @@ LDFLAGS ?=
 LDLIBS   =
 
 # ---- emulator sources ----
-SRC := $(wildcard src/*.c) $(wildcard src/devices/*.c) $(wildcard src/net/*.c)
+SRC := $(wildcard src/*.c) $(wildcard src/devices/*.c) $(wildcard src/net/*.c) $(wildcard src/jit/*.c)
 OBJ := $(SRC:.c=.o)
 DEP := $(OBJ:.o=.d)
 BIN := arm64emu
