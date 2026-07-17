@@ -22,11 +22,21 @@
 #include "../cpu.h"
 
 typedef struct {
-    u32 insn;      /* the classified word (kept for helper fallback calls) */
+    u32 insn;      /* the classified word; also the pd_run cache validation tag
+                    * (a live fetch whose word differs re-fills the entry, so the
+                    * cache is self-modifying- and address-space-safe) */
     u8  op;        /* dense opcode id, PD_GENERIC = 0 */
     u8  rd, rn, rm;/* raw 5-bit register fields (meaning varies per op) */
     u64 imm;       /* immediate/offset/mask/4th operand, pre-computed at fill */
 } PDEnt;
+
+/* pd_run's direct-mapped decode cache, indexed by (pc>>2)&PD_MASK. 16 K entries
+ * (256 KB) is arm64chroot's measured size/benefit knee. Single global: this is a
+ * single-CPU system emulator (the donor's __thread was for its user threads). */
+#define PD_BITS 14
+#define PD_SIZE (1u << PD_BITS)
+#define PD_MASK (PD_SIZE - 1)
+extern PDEnt g_pdcache[PD_SIZE];
 
 enum {
     PD_GENERIC = 0,   /* everything else: dispatch to exec_a64 */
@@ -131,5 +141,11 @@ enum {
 /* Classify one instruction word into a PDEnt (dense op id + pre-extracted
  * operands; PD_GENERIC when unrecognized). Pure function of the word. */
 void pd_fill(PDEnt *e, u32 insn);
+
+/* Opt-in `-pd` interpreter tier: a direct-threaded executor over the decode
+ * cache. pd_step runs a slice (mirrors jit_step's contract) and returns when
+ * the driver must intervene (deadline, IRQ line, halt/stop, fetch abort). */
+extern int g_pd;                   /* -pd (main.c); mutually exclusive with -jit */
+StepResult pd_step(CPU *c, u64 slice, u64 max_insn);
 
 #endif /* A64_JIT_PREDECODE_H */

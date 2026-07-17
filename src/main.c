@@ -5,6 +5,7 @@
 #include "cpu.h"
 #include "tty.h"
 #include "jit/jit.h"
+#include "jit/predecode.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -54,7 +55,8 @@ static void usage(const char *p) {
         "          [-drive IMG[,ro] (repeatable)] [-net] [-netfwd tcp|udp:HOST_PORT:GUEST_PORT]\n"
         "          [-virtfs DIR[,tag=TAG][,ro] (repeatable)] [-console pl011|virtio]\n"
         "          [-m MB] [-bin FLAT@ADDR] [-entry ADDR] [-el N] [-d] [-maxinsn N]\n"
-        "          [-jit]  (native code generation; default off, interpreter)\n", p);
+        "          [-jit]  (native code generation; default off, interpreter)\n"
+        "          [-pd]   (direct-threaded interpreter tier; default off)\n", p);
 }
 
 /* True if host paths a and b name the same file. Compares canonical (realpath)
@@ -160,6 +162,7 @@ int main(int argc, char **argv) {
         }
         else if (!strcmp(argv[i], "-net")) net_enabled = true;
         else if (!strcmp(argv[i], "-jit")) g_jit = 1;
+        else if (!strcmp(argv[i], "-pd")) g_pd = 1;
         else if (!strcmp(argv[i], "-console") && i + 1 < argc) {
             const char *k = argv[++i];
             if      (!strcmp(k, "pl011"))  console_virtio = false;
@@ -216,6 +219,14 @@ int main(int argc, char **argv) {
     if (g_jit && !jit_backend_available()) {
         fprintf(stderr, "[jit] disabled: no code generator for this host\n");
         g_jit = 0;
+    }
+    /* -pd: opt-in direct-threaded interpreter tier. -jit wins if both given;
+     * force it off for the per-instruction debug facilities (like -jit), which
+     * expect one exec_a64 per step. */
+    if (g_pd && g_jit) g_pd = 0;
+    if (g_pd && (g_debug_hooks || g_watch || g_vawatch)) {
+        fprintf(stderr, "[pd] disabled: per-instruction debug facility active\n");
+        g_pd = 0;
     }
 
     Machine m;
@@ -285,10 +296,11 @@ int main(int argc, char **argv) {
     unsigned long tick_mask = 0x3ff;     /* AETICK: IRQ-poll granularity (debug) */
     if (getenv("AETICK")) tick_mask = strtoul(getenv("AETICK"), 0, 0);
     for (;;) {
-        /* -jit: one jit_step covers up to a tick-slice of instructions, so
-         * tick on every return; the interpreter ticks every 1024 steps. */
-        if (machine_tick && (g_jit || (++ticker & tick_mask) == 0)) machine_tick(&m);
+        /* -jit/-pd: one step covers up to a tick-slice of instructions, so tick
+         * on every return; the plain interpreter ticks every 1024 steps. */
+        if (machine_tick && (g_jit || g_pd || (++ticker & tick_mask) == 0)) machine_tick(&m);
         StepResult r = g_jit ? jit_step(&m.cpu, tick_mask + 1, max_insn)
+                     : g_pd  ? pd_step(&m.cpu, tick_mask + 1, max_insn)
                              : cpu_step(&m.cpu);
         if (r == STEP_HALT) {
             if (m.cpu.reset && machine_reset) {   /* PSCI SYSTEM_RESET: warm reboot */
