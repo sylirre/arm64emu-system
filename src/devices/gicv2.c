@@ -78,8 +78,16 @@ static u64 gicd_read(void *opaque, u64 off, unsigned size) {
         return v;
     }
     if (off >= 0x800 && off < 0xc00) {                             /* ITARGETSR */
+        /* IRQs 0-31 are banked per-CPU and read-only: on this single-CPU system
+         * each targets CPU0, so the byte reads back 0x01. Linux's
+         * gic_get_cpumask() scans these to find its CPU mask and warns "GIC CPU
+         * mask not found" if they read 0. SPIs (>=32) are read-as-written. */
         unsigned base = off - 0x800; u64 v = 0;
-        for (unsigned i = 0; i < size; i++) v |= (u64)g->target[base + i] << (i * 8);
+        for (unsigned i = 0; i < size; i++) {
+            unsigned irq = base + i;
+            u8 b = (irq < 32) ? 0x01 : g->target[irq];
+            v |= (u64)b << (i * 8);
+        }
         return v;
     }
     if (off >= 0xc00 && off < 0xd00) {                             /* ICFGR (2 bits each) */
@@ -130,7 +138,11 @@ static void gicd_write(void *opaque, u64 off, unsigned size, u64 val) {
     }
     if (off >= 0x800 && off < 0xc00) {                             /* ITARGETSR */
         unsigned base = off - 0x800;
-        for (unsigned i = 0; i < size; i++) g->target[base + i] = (val >> (i * 8)) & 0xff;
+        for (unsigned i = 0; i < size; i++) {
+            unsigned irq = base + i;
+            if (irq < 32) continue;   /* IRQs 0-31 are banked/read-only */
+            g->target[irq] = (val >> (i * 8)) & 0xff;
+        }
         return;
     }
     if (off >= 0xc00 && off < 0xd00) {                             /* ICFGR */

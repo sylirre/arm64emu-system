@@ -113,7 +113,10 @@ static void blk_request(VirtIOBlk *v, u32 head) {
     } else if (type == VIRTIO_BLK_T_IN || type == VIRTIO_BLK_T_OUT) {
         u64 total = 0;
         for (u32 i = 1; i + 1 < n; i++) total += dlen[i];
-        if (off + total > v->capacity * SECTOR_SIZE) {
+        /* Range-check without overflow: a hostile `sector` (~2^55) would wrap
+         * both `sector*512` and `off+total`. Compare in the sector/byte domains
+         * with subtraction so nothing overflows. */
+        if (sector > v->capacity || total > (v->capacity - sector) * SECTOR_SIZE) {
             status = VIRTIO_BLK_S_IOERR;             /* out of range */
         } else {
             for (u32 i = 1; i + 1 < n; i++) {

@@ -786,7 +786,9 @@ static u32 p9_dispatch(VirtIO9P *v, u32 reqlen, u32 wcap) {
     (void)c_u32(&in);                          /* size (use reqlen) */
     u8  type = c_u8(&in);
     u16 tag  = c_u16(&in);
-    if (in.err) return 0;                      /* truncated header: drop */
+    /* Truncated header: reply Rlerror instead of a zero-length message, which
+     * would complete the descriptor with no R-message and hang the tag forever. */
+    if (in.err) return mk_lerror(v, tag, EINVAL, cap);
 
     switch (type) {
         case P9_TVERSION:     return h_version(v, &in, tag, cap);

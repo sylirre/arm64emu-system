@@ -15,14 +15,18 @@
 
 static const u8 pl031_id[8] = { 0x31, 0x10, 0x14, 0x00, 0x0d, 0xf0, 0x05, 0xb1 };
 
+/* Host counter feeding the RTC: live wall-clock seconds, or the fixed epoch in
+ * deterministic mode. The guest RTC value is this plus tick_offset. */
+static u32 rtc_host_count(void) {
+    return g_rtclock ? (u32)time(NULL) : RTC_FIXED_EPOCH;
+}
+
 static u64 rtc_read(void *opaque, u64 off, unsigned size) {
     PL031 *p = opaque;
     if (off >= 0xfe0 && off <= 0xffc) return pl031_id[(off - 0xfe0) / 4];
     switch (off) {
-        case 0x00: {                                 /* DR */
-            u32 base = g_rtclock ? (u32)time(NULL) : RTC_FIXED_EPOCH;
-            return base + p->lr;
-        }
+        case 0x00:                                   /* DR: current count = host + offset */
+            return (u32)(rtc_host_count() + p->tick_offset);
         case 0x04: return p->mr;
         case 0x08: return p->lr;
         case 0x0c: return p->cr;
@@ -37,7 +41,10 @@ static void rtc_write(void *opaque, u64 off, unsigned size, u64 val) {
     PL031 *p = opaque;
     switch (off) {
         case 0x04: p->mr = (u32)val; break;
-        case 0x08: p->lr = (u32)val; break;
+        case 0x08:                                   /* LR: load the counter (sets current time) */
+            p->lr = (u32)val;
+            p->tick_offset = (s64)(s32)((u32)val - rtc_host_count());
+            break;
         case 0x0c: p->cr = (u32)val; break;
         case 0x10: p->imsc = (u32)val; break;
         case 0x1c: p->ris &= ~(u32)val; break;

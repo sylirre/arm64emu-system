@@ -62,7 +62,7 @@ void pl011_reset(PL011 *p);       /* system reset: clear FIFO/masks/interrupt */
 void pl011_rx_poll(Machine *m);   /* feed host stdin into RX FIFO */
 
 /* ---- PL031 RTC ---- */
-typedef struct PL031 { GIC *gic; u32 mr, lr, cr, imsc, ris; } PL031;
+typedef struct PL031 { GIC *gic; u32 mr, lr, cr, imsc, ris; s64 tick_offset; } PL031;
 PL031 *pl031_create(Machine *m, GIC *gic);
 void pl031_reset(PL031 *p);       /* system reset: clear match/control/interrupt */
 
