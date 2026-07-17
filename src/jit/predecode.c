@@ -202,9 +202,9 @@ static void fill_ldst(PDEnt *e, u32 insn) {
     if (b2927 == 0x3 && BITS(25, 24) == 0) {         /* literal */
         unsigned opc = BITS(31, 30);
         if (BIT(26)) return;                         /* coverage: SIMD&FP literal
-                                                      * is UNDEF in decode.c
-                                                      * (ldst_literal V=1) ->
-                                                      * GENERIC, not PD_LDRLITV */
+                                                      * stays GENERIC (no
+                                                      * PD_LDRLITV op here);
+                                                      * decode.c runs it */
         if (opc == 0) e->op = PD_LDRLIT32;
         else if (opc == 1) e->op = PD_LDRLIT64;
         else if (opc == 3) e->op = PD_NOP;           /* PRFM literal */
