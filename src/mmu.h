@@ -59,4 +59,39 @@ bool mem_write128(CPU *c, u64 va, const V128 *val);
 /* Invalidate the software TLB (called on TLBI / TTBR / context changes). */
 void tlb_flush_all(void);
 
+/* ---------------- data-access fast path: host-pointer D-TLB ----------------
+ * Direct-mapped cache of VA page -> host RAM page, probed by mem_read/mem_write
+ * before the full translate+bus path. RAM pages only: flash (CFI command state)
+ * and MMIO (side effects) are never inserted, so they always take the bus path.
+ * The entry layout is an ABI shared with the JIT backends (which emit this
+ * probe inline) — do not change it without updating them.
+ *
+ * tag: VA page | flush-generation (bits 11:2) | SCTLR.M (bit 1) | EL0 (bit 0).
+ *      Folding the generation into the tag makes tlb_flush_all O(1): bumping
+ *      g_tlb_gen invalidates every entry without touching the array. The
+ *      10-bit slice aliases every 1024 flushes; tlb_flush_all memsets then.
+ * pte: 4 KB-aligned host page pointer | write-allowed (bit 1) | read (bit 0).
+ *      A zeroed entry has no permission bits, so it can never fast-path. */
+#define DTLB_BITS 10
+#define DTLB_SIZE (1u << DTLB_BITS)
+#define DTLB_R    1u
+#define DTLB_W    2u
+typedef struct { u64 tag; u64 pte; } DTlbEnt;
+_Static_assert(sizeof(DTlbEnt) == 16, "DTlbEnt layout is a JIT backend ABI");
+extern DTlbEnt g_dtlb[DTLB_SIZE];
+extern u32 g_tlb_gen;
+
+/* Pages holding JIT-translated code: the D-TLB refuses the W bit for them so
+ * guest stores fall to the slow path, where the JIT invalidates the page's
+ * blocks (self-modifying-code coherence). NULL until a JIT allocates it. */
+extern const u8 *g_jit_code_bitmap;
+
+static inline u64 dtlb_tag(const CPU *c, u64 va) {
+    return (va & ~0xfffULL) | ((u64)(g_tlb_gen & 0x3ff) << 2)
+         | ((c->sctlr[1] & 1) ? 2u : 0u) | (c->el == 0 ? 1u : 0u);
+}
+static inline DTlbEnt *dtlb_ent(u64 va) {
+    return &g_dtlb[(va >> 12) & (DTLB_SIZE - 1)];
+}
+
 #endif /* A64_MMU_H */

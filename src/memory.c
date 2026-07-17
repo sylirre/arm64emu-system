@@ -5,12 +5,18 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <sys/mman.h>
 
 void machine_init(Machine *m, u64 ram_size) {
     memset(m, 0, sizeof(*m));
     m->ram_base = RAM_BASE;
     m->ram_size = ram_size ? ram_size : RAM_SIZE_DEF;
-    m->ram = calloc(1, m->ram_size);
+    /* mmap, not calloc: host page pointers to RAM must be 4 KB-aligned because
+     * the D-TLB packs permission bits into their low bits (see mmu.h), and the
+     * anonymous mapping gives lazily-zeroed pages for large guest RAM. */
+    m->ram = mmap(NULL, m->ram_size, PROT_READ | PROT_WRITE,
+                  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (m->ram == MAP_FAILED) m->ram = NULL;
     m->flash_base = FLASH_BASE;
     m->flash_size = FLASH_SIZE;
     m->flash = calloc(1, m->flash_size);
@@ -25,7 +31,7 @@ void machine_init(Machine *m, u64 ram_size) {
 }
 
 void machine_free(Machine *m) {
-    free(m->ram);
+    if (m->ram) munmap(m->ram, m->ram_size);
     free(m->flash);
 }
 
