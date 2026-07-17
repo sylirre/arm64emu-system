@@ -95,6 +95,8 @@ static void do_mrs(CPU *c, unsigned key, unsigned Rt) {
         case KEY(3,0,4,2,0): v = c->sp_sel; break;           /* SPSel */
         case KEY(3,3,4,2,0): v = c->nzcv & 0xf0000000; break;/* NZCV */
         case KEY(3,3,4,2,1): v = c->daif & (PS_D|PS_A|PS_I|PS_F); break; /* DAIF */
+        case KEY(3,3,4,4,0): v = c->fpcr; break;             /* FPCR */
+        case KEY(3,3,4,4,1): v = c->fpsr; break;             /* FPSR */
         case KEY(3,0,4,0,0): v = c->spsr[1]; break;          /* SPSR_EL1 */
         case KEY(3,0,4,0,1): v = c->elr[1]; break;           /* ELR_EL1 */
         case KEY(3,0,4,1,0): v = c->sp_el[0]; break;         /* SP_EL0 */
@@ -152,6 +154,8 @@ static void do_msr(CPU *c, unsigned key, unsigned Rt) {
         case KEY(3,0,4,2,0): c->sp_sel = v & 1; break;                 /* SPSel */
         case KEY(3,3,4,2,0): c->nzcv = (u32)(v & 0xf0000000); break;   /* NZCV */
         case KEY(3,3,4,2,1): c->daif = (u32)(v & (PS_D|PS_A|PS_I|PS_F)); break; /* DAIF */
+        case KEY(3,3,4,4,0): c->fpcr = (u32)v; break;                  /* FPCR */
+        case KEY(3,3,4,4,1): c->fpsr = (u32)v; break;                  /* FPSR */
         case KEY(3,0,4,0,0): c->spsr[1] = v; break;                    /* SPSR_EL1 */
         case KEY(3,0,4,0,1): c->elr[1] = v; break;                     /* ELR_EL1 */
         case KEY(3,0,4,1,0): c->sp_el[0] = v; break;                   /* SP_EL0 */
