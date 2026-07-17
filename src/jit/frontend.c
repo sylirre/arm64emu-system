@@ -18,11 +18,10 @@
 
 /* Stage gates: inline families not yet enabled in this port (Stage 2c).
  * Gated families fall through to IRO_CALL1/exec_a64, which is always
- * correct; flipping a gate to 1 re-enables the donor's inline path.
- * JIT_FE_ATOMICS must stay 0: the donor inlines value-CAS exclusives, but
- * this emulator's monitor is address-match (decode.c ldst_exclusive) — the
- * inline path would diverge from the reference interpreter. */
-#define JIT_FE_ATOMICS    0
+ * correct. fe_atomic is NOT the donor's (value-CAS) path — it was
+ * rewritten for this emulator's address-match monitor; the gate remains
+ * for AEJIT_PDMAX bisection. */
+#define JIT_FE_ATOMICS    1
 #define JIT_FE_FPSIMD     1
 #define JIT_FE_LDST_EXTRA 1
 #define JIT_FE_LD1        1
@@ -567,53 +566,59 @@ static int fe_fpsimd(IRBlock *ir, u32 insn, u64 pc) {
     return 1;
 }
 
-/* Inline exclusives / LSE atomics / ordered accesses (decode.c
- * ldst_exclusive and ldst_atomic are the reference; predecode classifies
- * them all PD_GENERIC). Emits one IRO_ATOMIC and returns 1 when the word is
- * a form the backends inline; 0 = caller falls back to the helper. These
- * are NOT counted in ninsns — the fast path bumps icount itself and the
- * slow path re-runs the insn through the self-counting jit_exec1. */
+/* Inline exclusives (decode.c ldst_exclusive is the reference: an
+ * address-match monitor with NO size compare on store — stay
+ * bug-compatible). Only the o2=0 space: LDAR/STLR are plain accesses in
+ * fe_insn, and the o2=1,o1=1 CAS space must stay on the helper (decode.c's
+ * lenient o2 branch runs it as LDAR/STLR). LSE memops are absent from
+ * decode.c and never translate.
+ *
+ * Loads lower to ordinary probed IR ops plus monitor writes (a load fault
+ * exits before the monitor is touched, like the interpreter's early
+ * return; LDXP commits its registers all-or-nothing via the LDP temps).
+ * Stores wrap probed IRO_STs between IRO_ATOMIC (monitor compare,
+ * branches to the fail label) and IRO_ATOMIC_END (status write + monitor
+ * clear) — a store fault exits the block with the monitor still set and
+ * Rs unwritten. Counted in ninsns here like any inline insn. */
 static int fe_atomic(IRBlock *ir, u32 insn, u64 pc) {
-    unsigned rt = insn & 31, rn = (insn >> 5) & 31, rs = (insn >> 16) & 31;
-    IROp *o = NULL;
+    if ((insn & 0x3F800000u) != 0x08000000u) return 0;   /* o2=0 exclusives */
+    unsigned szl = insn >> 30;                   /* 00..11 = 1..8 bytes */
+    unsigned bytes = 1u << szl;
+    int L = (insn >> 22) & 1, o1 = (insn >> 21) & 1;
+    unsigned rt = insn & 31, rn = (insn >> 5) & 31;
+    unsigned rt2 = (insn >> 10) & 31, rs = (insn >> 16) & 31;
 
-    if ((insn & 0x3F000000u) == 0x08000000u) {   /* exclusives group */
-        unsigned szl = insn >> 30;               /* 00..11 = 1..8B */
-        int o2 = (insn >> 23) & 1, L = (insn >> 22) & 1, o1 = (insn >> 21) & 1;
-        int o0 = (insn >> 15) & 1;
-        if (o2 && o1) {                          /* CAS/CASA/CASL/CASAL */
-            o = ir_put(ir, IRO_ATOMIC, 1, rx(rs), rsp(rn), rx(rt),
-                       rx(rs), (u64)insn,
-                       AT_MAKE(AT_CAS, szl, (insn >> 22) & 1, o0));
-        } else if (o2 && !o1) {                  /* LDAR/LDLAR / STLR/STLLR */
-            if (L) o = ir_put(ir, IRO_ATOMIC, 1, rx(rt), rsp(rn), VREG_ZERO,
-                              VREG_ZERO, (u64)insn, AT_MAKE(AT_LDAR, szl, 1, 0));
-            else   o = ir_put(ir, IRO_ATOMIC, 1, VREG_ZERO, rsp(rn), rx(rt),
-                              VREG_ZERO, (u64)insn, AT_MAKE(AT_STLR, szl, 0, 1));
-        } else if (!o2 && !o1) {                 /* LDXR/LDAXR / STXR/STLXR */
-            if (L) o = ir_put(ir, IRO_ATOMIC, 1, rx(rt), rsp(rn), VREG_ZERO,
-                              VREG_ZERO, (u64)insn, AT_MAKE(AT_LDX, szl, o0, 0));
-            else   o = ir_put(ir, IRO_ATOMIC, 1, rx(rs), rsp(rn), rx(rt),
-                              VREG_ZERO, (u64)insn, AT_MAKE(AT_STX, szl, 0, o0));
+    if (L) {                                     /* LDXR/LDAXR/LDXP/LDAXP */
+        /* va first: rt may alias rn, and excl_addr is the OLD base. */
+        ir_put(ir, IRO_MOV, 1, VREG_TMP2, rsp(rn), 0, 0, 0, 0);
+        if (!o1) {
+            put_ld(ir, VREG_TMP2, 0, rt, szl, 0, szl == 3, pc);
+        } else {
+            put_ld_tmp(ir, VREG_TMP2, 0, 0, szl, 0, szl == 3, pc);
+            put_ld_tmp(ir, VREG_TMP2, bytes, 1, szl, 0, szl == 3, pc);
+            if (rt != 31)
+                ir_put(ir, IRO_MOV, 1, (u8)rt, VREG_TMP0, 0, 0, 0, 0);
+            if (rt2 != 31)
+                ir_put(ir, IRO_MOV, 1, (u8)rt2, VREG_TMP1, 0, 0, 0, 0);
+            bytes *= 2;
         }
-        /* LDXP/STXP/CASP: helper (128-bit / pair monitor; rare) */
-    } else if ((insn & 0x3B200C00u) == 0x38200000u) {   /* LSE atomic memops */
-        unsigned szl = insn >> 30;
-        int A = (insn >> 23) & 1, R = (insn >> 22) & 1;
-        int o3 = (insn >> 15) & 1;
-        unsigned opc = (insn >> 12) & 7;
-        if (o3 && opc == 0)                      /* SWP */
-            o = ir_put(ir, IRO_ATOMIC, 1, rx(rt), rsp(rn), rx(rs), VREG_ZERO,
-                       (u64)insn, AT_MAKE(AT_SWP, szl, A, R));
-        else if (o3 && opc == 4 && rs == 31)     /* LDAPR */
-            o = ir_put(ir, IRO_ATOMIC, 1, rx(rt), rsp(rn), VREG_ZERO,
-                       VREG_ZERO, (u64)insn, AT_MAKE(AT_LDAR, szl, 1, 0));
-        else if (!o3)                            /* LDADD..LDSET, LDSMAX..LDUMIN */
-            o = ir_put(ir, IRO_ATOMIC, 1, rx(rt), rsp(rn), rx(rs), VREG_ZERO,
-                       (u64)insn, AT_MAKE(AT_LDADD + opc, szl, A, R));
+        ir_put(ir, IRO_MOVI, 1, VREG_TMP0, 0, 0, 0, 1, 0);
+        ir_put(ir, IRO_CPUST, 0, VREG_ZERO, VREG_TMP0, 0, 0,
+               offsetof(CPU, excl_valid), 0);    /* u32 field */
+        ir_put(ir, IRO_CPUST, 1, VREG_ZERO, VREG_TMP2, 0, 0,
+               offsetof(CPU, excl_addr), 0);
+        ir_put(ir, IRO_MOVI, 1, VREG_TMP0, 0, 0, 0, bytes, 0);
+        ir_put(ir, IRO_CPUST, 1, VREG_ZERO, VREG_TMP0, 0, 0,
+               offsetof(CPU, excl_size), 0);
+    } else {                                     /* STXR/STLXR/STXP/STLXP */
+        ir_put(ir, IRO_ATOMIC, 0, VREG_ZERO, rsp(rn), VREG_ZERO,
+               VREG_ZERO, 0, 0);
+        put_st(ir, rsp(rn), 0, rx(rt), szl, pc);
+        if (o1) put_st(ir, rsp(rn), bytes, rx(rt2), szl, pc);
+        ir_put(ir, IRO_ATOMIC_END, 1, rx(rs), VREG_ZERO, VREG_ZERO,
+               VREG_ZERO, 0, 0);
     }
-    if (!o) return 0;
-    o->imm2pc = pc;
+    ir->ninsns++;
     return 1;
 }
 
@@ -1382,7 +1387,7 @@ static int fe_insn(IRBlock *ir, const PDEnt *e, u64 pc) {
              *   +4 fe_ld1     +5 RBIT idiom +6 ADC/SBC family */
             if (JIT_FE_ATOMICS && e->op == PD_GENERIC &&
                 !fe_gated(PD_NOPS_ + 0) && fe_atomic(ir, insn, pc))
-                return FE_CONT;      /* inline atomic (not in ninsns) */
+                return FE_CONT;      /* inline exclusive (counted inside) */
             if (JIT_FE_FPSIMD && e->op == PD_GENERIC &&
                 !fe_gated(PD_NOPS_ + 1) && fe_fpsimd(ir, insn, pc))
                 return FE_CONT;      /* inline vector/FP (counted inside) */
@@ -1536,6 +1541,12 @@ static int fe_insn(IRBlock *ir, const PDEnt *e, u64 pc) {
                     ir->ninsns++;
                     ir_put(ir, IRO_JMP, 0, 0, 0, 0, 0, next, 0);
                     return FE_END;
+                }
+                if ((insn & 0xFFFFF0FFu) == 0xD503305Fu) {   /* CLREX */
+                    ir_put(ir, IRO_MOVI, 1, VREG_TMP0, 0, 0, 0, 0, 0);
+                    ir_put(ir, IRO_CPUST, 0, VREG_ZERO, VREG_TMP0, 0, 0,
+                           offsetof(CPU, excl_valid), 0);
+                    break;
                 }
                 if ((insn & 0xFFFFFFE0u) == 0xD53B00E0u) {   /* MRS Xt, DCZID_EL0 */
                     if (rt != 31)                            /* BS=4 (64B) */

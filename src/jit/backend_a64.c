@@ -51,6 +51,8 @@ typedef struct BE {
     u32 lru[HREG_N];
     u32 stamp;
     int fl;
+    u8 *at_f0, *at_f1;          /* IRO_ATOMIC's fail branches, patched by
+                                 * the matching IRO_ATOMIC_END */
     /* guest V-register cache: host v18-v29 (v0-v3/v16-v17 stay recipe
      * scratch; v8-v15 are AAPCS callee-saved and the thunks don't save
      * them) */
@@ -1387,230 +1389,43 @@ static void emit_vop(BE *be, const IROp *o) {
     }
 }
 
-/* ---- inline atomics (IRO_ATOMIC; decode.c ldst_exclusive/ldst_atomic are
- * the reference) ---- */
-#if JIT_BE_ATOMICS
 
-static void cbnz_to(Emit *e, int w, unsigned rt, const u8 *target) {
-    s64 off = target - e->rx;
-    ei(e, ((u32)w << 31) | 0x35000000u |
-          ((((u32)(off >> 2)) & 0x7FFFFu) << 5) | rt);
-}
-/* exclusives/ordered encodings, size-suffixed, [Xn] addressing */
-static u32 enc_ldaxr(unsigned szl, unsigned rt, unsigned rn) {
-    return ((u32)szl << 30) | 0x085FFC00u | (rn << 5) | rt;
-}
-static u32 enc_stlxr(unsigned szl, unsigned rs, unsigned rt, unsigned rn) {
-    return ((u32)szl << 30) | 0x0800FC00u | (rs << 16) | (rn << 5) | rt;
-}
-static u32 enc_ldar(unsigned szl, unsigned rt, unsigned rn) {
-    return ((u32)szl << 30) | 0x08DFFC00u | (rn << 5) | rt;
-}
-static u32 enc_stlr(unsigned szl, unsigned rt, unsigned rn) {
-    return ((u32)szl << 30) | 0x089FFC00u | (rn << 5) | rt;
-}
-static u32 enc_eor(unsigned rd, unsigned rn, unsigned rm) {   /* 64-bit */
-    return 0xCA000000u | (rm << 16) | (rn << 5) | rd;
-}
-static u32 enc_ldrb_off(unsigned rt, unsigned rn, unsigned off) {
-    return 0x39400000u | (off << 10) | (rn << 5) | rt;
-}
-static u32 enc_strb_off(unsigned rt, unsigned rn, unsigned off) {
-    return 0x39000000u | (off << 10) | (rn << 5) | rt;
-}
+/* ---- inline exclusives (IRO_ATOMIC / IRO_ATOMIC_END; decode.c
+ * ldst_exclusive is the reference semantics; see backend_x86_64.c for the
+ * bracket design) ---- */
 
-/* Donor value-CAS exclusives compiled out — see backend_x86_64.c's note
- * (this emulator's monitor is address-match; IRO_ATOMIC is never emitted). */
-#define OFF_EXCL_VALID ((unsigned)offsetof(CPU, excl_valid))
-#define OFF_EXCL_ADDR  ((unsigned)offsetof(CPU, excl_addr))
-#define OFF_EXCL_SIZE  ((unsigned)offsetof(CPU, excl_size))
-#define OFF_EXCL_VAL   ((unsigned)offsetof(CPU, excl_val))
-
-/* One IRO_ATOMIC (mirrors backend_x86_64.c). Fast path: align gate + probe
- * + ldaxr/stlxr sequence; result converges in x16. Slow path re-runs the
- * insn via jit_exec1 (self-counting; the fast path bumps icount inline). */
 static void emit_atomic(BE *be, const IRBlock *ir, int i) {
     Emit *e = be->e;
     const IROp *o = &ir->ops[i];
-    unsigned kind = AT_KIND(o->aux), szl = AT_SZL(o->aux);
-    unsigned sz = 1u << szl;
-    int is_load_kind = (kind == AT_LDX || kind == AT_LDAR);
-    int need = is_load_kind ? 1 : 2;
-    int uses_b = !(kind == AT_LDX || kind == AT_LDAR);
-
     materialize_flags(be);
-    int hb = uses_b ? ra_use(be, o->b) : -1;
-    int hs = (kind == AT_CAS) ? ra_use(be, o->cc) : -1;
-    int ha = ra_use(be, o->a);
-    ei(e, enc_mov(1, 1, (unsigned)ha));           /* x1 = va */
-
-    u8 *slow0 = NULL, *slow1 = NULL, *slow2 = NULL, *slow3 = NULL;
-    if (UNLIKELY(be->env->slowmem)) {
-        slow0 = b_fwd(e);
-    } else {
-        if (sz > 1) {                             /* alignment gate */
-            ei(e, enc_andi64(16, 1, 0, szl - 1)); /* and x16, x1, #sz-1 */
-            slow1 = cbnz_fwd(e, 1, 16);
-        }
-        ei(e, enc_ubfm(1, 16, 1, 12, 63));        /* page (aligned: no cross) */
-        ei(e, enc_ubfm(1, 17, 1, 8, 63));
-        ei(e, enc_andi64(17, 17, (64 - 4) & 63,
-                         (unsigned)__builtin_ctz(A64_DTLB_ENTRIES) - 1));
-        ei(e, enc_ldr(3, 2, 27, (unsigned)offsetof(JitEnv, dtlb)));
-        ei(e, enc_addr(17, 2, 17));
-        ei(e, enc_ldr(3, 2, 17, 0));
-        ei(e, enc_cmp(2, 16));
-        slow2 = bcond_fwd(e, 1);                  /* b.ne slow */
-        ei(e, enc_ldr(3, 2, 17, 8));
-        slow3 = tbz_fwd(e, 2, need == 2 ? 1 : 0);
-        ei(e, enc_andi64(2, 2, 61, 60));          /* host base */
-        ei(e, enc_andi64(16, 1, 0, 11));          /* page offset */
-        ei(e, enc_addr(17, 2, 16));               /* x17 = host ptr */
-    }
-
-    icount_add(be, 1);                            /* retires from here (x16) */
-
-    switch (kind) {
-        case AT_LDX:
-            ei(e, enc_ldst0(szl, 1, 16, 17));     /* zero-extended load */
-            ei(e, enc_str(3, 1, 28, OFF_EXCL_ADDR));
-            ei(e, enc_movz(1, 2, sz, 0));
-            ei(e, enc_str(3, 2, 28, OFF_EXCL_SIZE));
-            ei(e, enc_str(3, 16, 28, OFF_EXCL_VAL));
-            ei(e, enc_movz(0, 2, 1, 0));
-            ei(e, enc_strb_off(2, 28, OFF_EXCL_VALID));
-            if (AT_ACQ(o->aux)) ei(e, 0xD50339BFu);   /* dmb ishld */
-            break;
-        case AT_STX: {
-            ei(e, enc_ldrb_off(16, 28, OFF_EXCL_VALID));
-            u8 *f1 = cbz_fwd(e, 0, 16);
-            ei(e, enc_ldr(3, 16, 28, OFF_EXCL_ADDR));
-            ei(e, enc_eor(16, 16, 1));
-            u8 *f2 = cbnz_fwd(e, 1, 16);
-            ei(e, enc_ldr(3, 16, 28, OFF_EXCL_SIZE));
-            ei(e, 0xF100001Fu | ((u32)sz << 10) | (16u << 5));  /* cmp x16,#sz */
-            u8 *f3 = bcond_fwd(e, 1);             /* b.ne fail */
-            ei(e, enc_ldr(3, 2, 28, OFF_EXCL_VAL));   /* expected */
-            const u8 *loop = e->rx;
-            ei(e, enc_ldaxr(szl, 16, 17));
-            ei(e, enc_cmp(16, 2));
-            u8 *f4 = bcond_fwd(e, 1);             /* memory changed: fail */
-            ei(e, enc_stlxr(szl, 16, (unsigned)hb, 17));
-            cbnz_to(e, 0, 16, loop);
-            ei(e, enc_movz(1, 16, 0, 0));         /* success: status 0 */
-            u8 *join = b_fwd(e);
-            fwd_here(e, f1); fwd_here(e, f2); fwd_here(e, f3); fwd_here(e, f4);
-            ei(e, enc_movz(1, 16, 1, 0));         /* status 1 */
-            fwd_here(e, join);
-            ei(e, enc_strb_off(31, 28, OFF_EXCL_VALID));   /* strb wzr */
-            break;
-        }
-        case AT_LDAR:
-            ei(e, enc_ldar(szl, 16, 17));
-            break;
-        case AT_STLR:
-            ei(e, enc_stlr(szl, (unsigned)hb, 17));
-            break;
-        case AT_SWP: {
-            const u8 *loop = e->rx;
-            ei(e, enc_ldaxr(szl, 16, 17));
-            ei(e, enc_stlxr(szl, 2, (unsigned)hb, 17));
-            cbnz_to(e, 0, 2, loop);
-            break;
-        }
-        case AT_LDADD: case AT_LDCLR: case AT_LDEOR: case AT_LDSET: {
-            const u8 *loop = e->rx;
-            ei(e, enc_ldaxr(szl, 16, 17));
-            switch (kind) {
-                case AT_LDADD: ei(e, enc_addr(2, 16, (unsigned)hb)); break;
-                case AT_LDCLR: ei(e, enc_bic(2, 16, (unsigned)hb)); break;
-                case AT_LDEOR: ei(e, enc_eor(2, 16, (unsigned)hb)); break;
-                default:       ei(e, enc_orr(1, 2, 16, (unsigned)hb)); break;
-            }
-            ei(e, enc_stlxr(szl, 1, 2, 17));      /* status in w1 (va dead) */
-            cbnz_to(e, 0, 1, loop);
-            break;
-        }
-        case AT_LDSMAX: case AT_LDSMIN: case AT_LDUMAX: case AT_LDUMIN: {
-            /* ldaxr/stlxr loop; new value = compare-select of old vs operand
-             * at the access width/signedness (decode.c LSE_RMW cases 4-7).
-             * Sub-word compares run on sign/zero-extended copies in x1/x2;
-             * csel then picks between the raw registers (same low bytes). */
-            int sgn = (kind == AT_LDSMAX || kind == AT_LDSMIN);
-            int mx = (kind == AT_LDSMAX || kind == AT_LDUMAX);
-            unsigned cond = sgn ? (mx ? 0xCu : 0xBu)       /* GT / LT */
-                                : (mx ? 0x8u : 0x3u);      /* HI / LO */
-            const u8 *loop = e->rx;
-            ei(e, enc_ldaxr(szl, 16, 17));        /* x16 = old (zext) */
-            unsigned co = 16, cb = (unsigned)hb;
-            if (szl < 3) {
-                if (sgn) {                        /* sxt{b,h,w} x2/x1 */
-                    u32 imms = (8u << szl) - 1;
-                    ei(e, 0x93400000u | (imms << 10) | (16u << 5) | 2);
-                    ei(e, 0x93400000u | (imms << 10) | ((u32)hb << 5) | 1);
-                    co = 2; cb = 1;
-                } else {                          /* truncate the operand */
-                    ei(e, enc_andi64(1, (unsigned)hb, 0, sz * 8 - 1));
-                    cb = 1;
-                }
-            }
-            ei(e, enc_cmp(co, cb));
-            ei(e, 0x9A800000u | ((u32)hb << 16) | (cond << 12) |   /* csel */
-                  (16u << 5) | 2);                /* x2 = old wins ? x16 : hb */
-            ei(e, enc_stlxr(szl, 1, 2, 17));
-            cbnz_to(e, 0, 1, loop);
-            break;
-        }
-        case AT_CAS: {
-            unsigned hexp = (unsigned)hs;
-            if (szl < 3) {                        /* compare truncated */
-                ei(e, enc_andi64(2, (unsigned)hs, 0, sz * 8 - 1));
-                hexp = 2;
-            }
-            const u8 *loop = e->rx;
-            ei(e, enc_ldaxr(szl, 16, 17));
-            ei(e, enc_cmp(16, hexp));
-            u8 *out = bcond_fwd(e, 1);            /* b.ne: no store */
-            ei(e, enc_stlxr(szl, 1, (unsigned)hb, 17));
-            cbnz_to(e, 0, 1, loop);
-            fwd_here(e, out);
-            break;
-        }
-    }
-    u8 *done = b_fwd(e);
-
-    /* ---- slow path: re-run the insn in the interpreter ---- */
-    fwd_here(e, slow0);
-    fwd_here(e, slow1);
-    fwd_here(e, slow2);
-    fwd_here(e, slow3);
-    slow_store_dirty(be);
-    ei(e, enc_mov(1, 0, 28));                     /* jit_exec1(c, pc, insn) */
-    emit_imm64(e, 1, o->imm2pc);
-    ei(e, enc_movz(0, 2, (u32)o->imm & 0xffff, 0));
-    ei(e, enc_movk(0, 2, ((u32)o->imm >> 16) & 0xffff, 1));
-    ei(e, enc_ldr(3, 16, 27, (unsigned)offsetof(JitEnv, helper_exec1)));
-    ei(e, enc_blr(16));
-    u8 *ok = cbz_fwd(e, 0, 0);
-    exit_plain(be, o->icnt);
-    fwd_here(e, ok);
-    slow_reload_clobbered(be);
-    if (o->dst != VREG_ZERO)
-        ld_home(be, 16, o->dst);
-    fwd_here(e, done);
-
-    if (o->dst != VREG_ZERO) {
-        int hd = ra_def(be, o->dst);
-        ei(e, enc_mov(1, (unsigned)hd, 16));
-    }
+    sync_all(be);
+    int ha = ra_use(be, o->a);                   /* base = monitor address */
+    ei(e, enc_ldr(2, 16, 28, (unsigned)offsetof(CPU, excl_valid)));
+    ei(e, 0x7100001Fu | (16u << 5));             /* cmp w16, #0 */
+    be->at_f0 = bcond_fwd(e, 0);                 /* b.eq fail */
+    ei(e, enc_ldr(3, 16, 28, (unsigned)offsetof(CPU, excl_addr)));
+    ei(e, 0xEB000000u | ((u32)ha << 16) | (16u << 5) | 31);  /* cmp x16, ha */
+    be->at_f1 = bcond_fwd(e, 1);                 /* b.ne fail */
     be->fl = FL_MEM;
 }
-#else
-static void emit_atomic(BE *be, const IRBlock *ir, int i) {
-    (void)ir; (void)i;
-    be->e->overflow = 1;         /* unreachable: IRO_ATOMIC never emitted */
+
+static void emit_atomic_end(BE *be, const IROp *o) {
+    Emit *e = be->e;
+    sync_all(be);
+    invalidate_all(be);
+    if (o->dst != VREG_ZERO)
+        ei(e, enc_str(3, 31, 28, (unsigned)v_home(o->dst)));   /* xzr: 0 */
+    u8 *done = b_fwd(e);
+    fwd_here(e, be->at_f0);
+    fwd_here(e, be->at_f1);
+    if (o->dst != VREG_ZERO) {
+        ei(e, enc_movz(1, 16, 1, 0));            /* x16 = 1 */
+        ei(e, enc_str(3, 16, 28, (unsigned)v_home(o->dst)));
+    }
+    fwd_here(e, done);
+    ei(e, enc_str(2, 31, 28, (unsigned)offsetof(CPU, excl_valid)));  /* wzr */
+    be->fl = FL_MEM;
 }
-#endif /* JIT_BE_ATOMICS */
 
 static int emit_op(BE *be, const IRBlock *ir, int i);
 
@@ -2033,6 +1848,9 @@ static int emit_op(BE *be, const IRBlock *ir, int i) {
             break;
         case IRO_ATOMIC:
             emit_atomic(be, ir, i);
+            break;
+        case IRO_ATOMIC_END:
+            emit_atomic_end(be, o);
             break;
         case IRO_VOP:
             emit_vop(be, o);

@@ -25,7 +25,6 @@
 #define A64_DTLB_ENTRIES DTLB_SIZE
 
 /* Inline-exclusives emitter: compiled out (see backend_x86_64.c note). */
-#define JIT_BE_ATOMICS 0
 
 /* Basic-block budget: capped length, and a translation never crosses a 4 KB
  * guest page boundary (invalidation is page-granular). JIT_INSN_MAX_BYTES is

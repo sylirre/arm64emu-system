@@ -124,36 +124,16 @@ enum {
      * No faults. */
     IRO_VOP,
 
-    /* Inline exclusives / LSE atomics / ordered accesses, [base] only (the
-     * guest encodings carry no offset). aux = AT_MAKE(kind, szlog, acq, rel);
-     * a = base, b = store value / RMW operand, cc = extra source vreg (CAS
-     * expected), dst = result (loaded / old value / STXR status; ZERO for
-     * the ST* forms). Any TLB miss, misalignment, or perm failure re-runs
-     * the whole instruction through jit_exec1 (imm2pc = pc, aux2 = insn in
-     * imm). NOT counted in ninsns: the fast path bumps icount inline and
-     * jit_exec1 counts itself, so both routes retire exactly once. */
-    IRO_ATOMIC,             /* imm = raw insn word (slow-path re-execution) */
+    IRO_ATOMIC,             /* store-exclusive bracket open: a = base.
+                             * Compares the monitor (excl_valid/excl_addr)
+                             * and branches to the matching ATOMIC_END's
+                             * fail label; the probed IRO_ST(s) in between
+                             * are ordinary ops. */
+    IRO_ATOMIC_END,         /* bracket close: dst = status reg (0 = stored,
+                             * 1 = no monitor); clears excl_valid. */
 
     IRO_N_
 };
-
-/* IRO_ATOMIC kinds (aux bits 0..7) */
-enum {
-    AT_LDX,                 /* LDXR/LDAXR: load + record monitor */
-    AT_STX,                 /* STXR/STLXR: monitor check + host CAS, status */
-    AT_LDAR,                /* LDAR/LDLAR/LDAPR: atomic acquire load */
-    AT_STLR,                /* STLR/STLLR: atomic release store */
-    AT_SWP,                 /* SWP: dst = old, [base] = b */
-    AT_LDADD, AT_LDCLR, AT_LDEOR, AT_LDSET,   /* dst = old, [base] op= b */
-    AT_LDSMAX, AT_LDSMIN, AT_LDUMAX, AT_LDUMIN,   /* (order = LSE opc 4-7) */
-    AT_CAS,                 /* dst/cc = Rs (expected/old), b = Rt (new) */
-};
-#define AT_MAKE(kind, szlog, acq, rel) \
-    ((u32)((kind) | ((szlog) << 8) | ((acq) << 12) | ((rel) << 13)))
-#define AT_KIND(a)  ((a) & 0xff)
-#define AT_SZL(a)   (((a) >> 8) & 3)
-#define AT_ACQ(a)   (((a) >> 12) & 1)
-#define AT_REL(a)   (((a) >> 13) & 1)
 
 /* IRO_VOP classes (aux bits 0..5) + flags. The frontend whitelists exact
  * encodings and asks the backend (be_vop_ok) about per-host gaps; anything

@@ -55,6 +55,8 @@ typedef struct BE {
     u32 lru[HREG_N];
     u32 stamp;
     int fl;                     /* FL_* lazy guest-flag location */
+    u8 *at_f0, *at_f1;          /* IRO_ATOMIC's fail branches, patched by
+                                 * the matching IRO_ATOMIC_END */
     /* guest V-register cache: xmm5-15 (xmm0-4 stay recipe scratch) */
     s8  vv2h[32];
     u8  vh2v[16];               /* 32 = free */
@@ -2791,271 +2793,53 @@ static void emit_vop(BE *be, const IROp *o) {
     }
 }
 
-/* ---- inline atomics (IRO_ATOMIC; decode.c ldst_exclusive/ldst_atomic are
- * the reference semantics) ---- */
-#if JIT_BE_ATOMICS
 
-/* Size-suffixed r/m op on [rdx]: `reg` is the /r field. `two` selects the
- * 0F-prefixed table; opc32 is the 32-bit-form opcode (byte form = opc32-1,
- * the x86 convention). Handles 66/REX.W and the dil/sil byte-REX quirk. */
-static void mem_op_rdx(Emit *e, unsigned szlog, int two, u8 opc32, int reg) {
-    if (szlog == 1) e8(e, 0x66);
-    u8 r = (u8)(0x40 | ((szlog == 3) << 3) | (((reg >> 3) & 1) << 2));
-    if (r != 0x40 || (szlog == 0 && reg >= 4)) e8(e, r);
-    if (two) e8(e, 0x0F);
-    e8(e, szlog == 0 ? (u8)(opc32 - 1) : opc32);
-    e8(e, (u8)(((reg & 7) << 3) | 2));           /* [rdx] */
-}
-/* Zero-extending load of [rdx] into rax. */
-static void ld_zext_rdx(Emit *e, unsigned szlog) {
-    switch (szlog) {
-        case 0: e8(e, 0x0F); e8(e, 0xB6); e8(e, 0x02); break;
-        case 1: e8(e, 0x0F); e8(e, 0xB7); e8(e, 0x02); break;
-        case 2: e8(e, 0x8B); e8(e, 0x02); break;
-        default: e8(e, 0x48); e8(e, 0x8B); e8(e, 0x02); break;
-    }
-}
-/* rax = zext_szlog(src). */
-static void mov_zext_r(Emit *e, unsigned szlog, int dst, int src) {
-    if (szlog == 3) { mov_rr(e, 1, dst, src); return; }
-    if (szlog == 2) { mov_rr(e, 0, dst, src); return; }
-    u8 r = (u8)(0x40 | (((dst >> 3) & 1) << 2) | ((src >> 3) & 1));
-    if (r != 0x40 || (szlog == 0 && src >= 4)) e8(e, r);
-    e8(e, 0x0F);
-    e8(e, szlog == 0 ? 0xB6 : 0xB7);
-    e8(e, (u8)(0xC0 | ((dst & 7) << 3) | (src & 7)));
-}
-static void mov_sext_r(Emit *e, unsigned szlog, int dst, int src) {
-    if (szlog == 3) { mov_rr(e, 1, dst, src); return; }
-    rex(e, 1, dst, 0, src);
-    if (szlog == 2) e8(e, 0x63);                 /* movsxd */
-    else { e8(e, 0x0F); e8(e, szlog ? 0xBF : 0xBE); }
-    e8(e, (u8)(0xC0 | ((dst & 7) << 3) | (src & 7)));
-}
-static void mov_zext_rax(Emit *e, unsigned szlog, int src) {
-    if (szlog == 3) { mov_rr(e, 1, RAX, src); return; }
-    if (szlog == 2) { mov_rr(e, 0, RAX, src); return; }
-    u8 r = (u8)(0x40 | ((src >> 3) & 1));        /* REX.B for r8+; forced
-                                                  * for sil/dil byte source */
-    if (r != 0x40 || (szlog == 0 && src >= 4)) e8(e, r);
-    e8(e, 0x0F);
-    e8(e, szlog == 0 ? 0xB6 : 0xB7);
-    e8(e, (u8)(0xC0 | (RAX << 3) | (src & 7)));
-}
-static void jcc_to(Emit *e, int cc, const u8 *target) {
-    s64 rel = target - (e->rx + 6);
-    e8(e, 0x0F); e8(e, (u8)(0x80 | cc));
-    e32(e, (u32)(s32)rel);
+/* ---- inline exclusives (IRO_ATOMIC / IRO_ATOMIC_END; decode.c
+ * ldst_exclusive is the reference semantics) ----
+ * ATOMIC opens a store-exclusive bracket: monitor compare, recording two
+ * forward branches to the fail label ATOMIC_END lays down. The probed
+ * IRO_ST(s) between the pair are ordinary emissions, so a store fault
+ * exits the block with the monitor still set and the status register
+ * unwritten — decode.c's early return. ATOMIC_END drops every register
+ * mapping so both join paths agree on allocator state (nothing is dirty
+ * there: ATOMIC ran sync_all and stores define no registers). */
+
+static void st_imm32_r14(Emit *e, s32 disp, u32 imm) {  /* mov dword [r14+d],i */
+    e8(e, 0x41); e8(e, 0xC7);
+    e8(e, (u8)(0x80 | (R14 & 7)));
+    e32(e, (u32)disp); e32(e, imm);
 }
 
-/* Stage-2c note: the donor's inline exclusives implement value-CAS monitor
- * semantics against CPU.excl_val — a field this emulator does not have (its
- * monitor is address-match, decode.c ldst_exclusive). IRO_ATOMIC is never
- * emitted here (JIT_FE_ATOMICS=0 in frontend.c), so the donor emitter is
- * compiled out; a port would have to re-implement it against the
- * address-match monitor to stay bit-identical with the interpreter. */
-#define OFF_EXCL_VALID ((s32)offsetof(CPU, excl_valid))
-#define OFF_EXCL_ADDR  ((s32)offsetof(CPU, excl_addr))
-#define OFF_EXCL_SIZE  ((s32)offsetof(CPU, excl_size))
-#define OFF_EXCL_VAL   ((s32)offsetof(CPU, excl_val))
-
-/* One IRO_ATOMIC. Fast path: align gate + D-TLB probe (write perm for
- * anything that may store) + host lock-prefixed op; the loaded/old value
- * converges in rax exactly like emit_mem's loads. Any miss/misalign re-runs
- * the instruction via jit_exec1 (which also handles the alignment fault and
- * counts the insn; the fast path bumps icount inline instead — IRO_ATOMIC
- * is not in ninsns). */
 static void emit_atomic(BE *be, const IRBlock *ir, int i) {
     Emit *e = be->e;
     const IROp *o = &ir->ops[i];
-    unsigned kind = AT_KIND(o->aux), szlog = AT_SZL(o->aux);
-    unsigned sz = 1u << szlog;
-    int is_load_kind = (kind == AT_LDX || kind == AT_LDAR);
-    int need = is_load_kind ? 1 /*PTE_R*/ : 2 /*PTE_W*/;
-    int uses_b = !(kind == AT_LDX || kind == AT_LDAR);
-
     materialize_flags(be);
-    int hb = uses_b ? ra_use(be, o->b) : -1;
-    int hs = (kind == AT_CAS) ? ra_use(be, o->cc) : -1;
-    int ha = ra_use(be, o->a);
-    mov_rr(e, 1, RSI, ha);                       /* va (no offset forms) */
-
-    u8 *slow0 = NULL, *slow1 = NULL, *slow2 = NULL, *slow3 = NULL;
-    if (UNLIKELY(be->env->slowmem)) {
-        slow0 = jmp_fwd(e);
-    } else {
-        if (sz > 1) {                            /* alignment gate */
-            e8(e, 0x40); e8(e, 0xF6); e8(e, 0xC6); e8(e, (u8)(sz - 1));
-            slow1 = jcc_fwd(e, CC_NE);           /* test sil, sz-1 ; jnz */
-        }
-        mov_rr(e, 1, RAX, RSI);                  /* aligned: never crosses */
-        shift_ri(e, 1, 5, RAX, 12);
-        mov_rr(e, 0, RCX, RSI);
-        shift_ri(e, 0, 5, RCX, 12);
-        alu_ri32(e, 0, 4, RCX, A64_DTLB_ENTRIES - 1);
-        shift_ri(e, 0, 4, RCX, 4);
-        op_rm(e, 1, 0x03, RCX, R15, (s32)offsetof(JitEnv, dtlb));
-        op_rm(e, 1, 0x39, RAX, RCX, 0);
-        slow2 = jcc_fwd(e, CC_NE);
-        ld64(e, RDX, RCX, 8);
-        e8(e, 0xF6); e8(e, 0xC2); e8(e, (u8)need);
-        slow3 = jcc_fwd(e, CC_E);
-        alu_ri32(e, 1, 4, RDX, 0xFFFFFFF8u);
-        mov_rr(e, 0, RAX, RSI);
-        alu_ri32(e, 0, 4, RAX, 0xfff);
-        op_rr(e, 1, 0x01, RAX, RDX);             /* rdx = host ptr */
-    }
-
-    /* fast path retires unconditionally from here */
-    icount_add(be, 1);
-
-    switch (kind) {
-        case AT_LDX:
-            ld_zext_rdx(e, szlog);
-            st64(e, RSI, R14, OFF_EXCL_ADDR);
-            st_imm_r14(e, OFF_EXCL_SIZE, sz);
-            st64(e, RAX, R14, OFF_EXCL_VAL);
-            st_imm8_r14(e, OFF_EXCL_VALID, 1);
-            break;                               /* x86 loads are acquire */
-        case AT_STX: {
-            /* monitor check; on any mismatch status=1 without a store */
-            e8(e, 0x41); e8(e, 0x80);            /* cmp byte [r14+..], 0 */
-            e8(e, (u8)(0xB8 | (R14 & 7)));
-            e32(e, (u32)OFF_EXCL_VALID); e8(e, 0);
-            u8 *f1 = jcc_fwd(e, CC_E);
-            ld64(e, RAX, R14, OFF_EXCL_ADDR);
-            op_rr(e, 1, 0x39, RSI, RAX);         /* cmp rax, rsi */
-            u8 *f2 = jcc_fwd(e, CC_NE);
-            ld64(e, RAX, R14, OFF_EXCL_SIZE);
-            alu_ri32(e, 1, 7, RAX, sz);          /* cmp rax, sz */
-            u8 *f3 = jcc_fwd(e, CC_NE);
-            ld64(e, RAX, R14, OFF_EXCL_VAL);     /* expected */
-            e8(e, 0xF0);                         /* lock cmpxchg [rdx], hb */
-            mem_op_rdx(e, szlog, 1, 0xB1, hb);
-            e8(e, 0x0F); e8(e, 0x95); e8(e, 0xC0);   /* setne al */
-            e8(e, 0x0F); e8(e, 0xB6); e8(e, 0xC0);   /* movzx eax, al */
-            u8 *join = jmp_fwd(e);
-            fwd_here(e, f1); fwd_here(e, f2); fwd_here(e, f3);
-            mov_ri(e, 0, RAX, 1);
-            fwd_here(e, join);
-            st_imm8_r14(e, OFF_EXCL_VALID, 0);   /* cleared on both paths */
-            break;
-        }
-        case AT_LDAR:                            /* mov = acquire on TSO */
-            ld_zext_rdx(e, szlog);
-            break;
-        case AT_STLR:                            /* mov = atomic + release */
-            st_rdx_sized(e, szlog, hb);
-            break;
-        case AT_SWP:
-            mov_rr(e, 1, RCX, hb);
-            e8(e, 0xF0);                         /* lock xchg [rdx], rcx */
-            mem_op_rdx(e, szlog, 0, 0x87, RCX);
-            mov_zext_rax(e, szlog, RCX);
-            break;
-        case AT_LDADD:
-            if (o->dst == VREG_ZERO) {           /* STADD: lock add */
-                e8(e, 0xF0);
-                mem_op_rdx(e, szlog, 0, 0x01, hb);
-            } else {
-                mov_rr(e, 1, RCX, hb);
-                e8(e, 0xF0);                     /* lock xadd [rdx], rcx */
-                mem_op_rdx(e, szlog, 1, 0xC1, RCX);
-                mov_zext_rax(e, szlog, RCX);
-            }
-            break;
-        case AT_LDCLR: case AT_LDEOR: case AT_LDSET: {
-            u8 memop = kind == AT_LDCLR ? 0x21 : kind == AT_LDEOR ? 0x31 : 0x09;
-            if (o->dst == VREG_ZERO) {           /* ST<op>: one lock op */
-                if (kind == AT_LDCLR) {
-                    mov_rr(e, 1, RCX, hb);
-                    rex(e, 1, 0, 0, RCX); e8(e, 0xF7); e8(e, 0xD1);  /* not rcx */
-                    e8(e, 0xF0); mem_op_rdx(e, szlog, 0, memop, RCX);
-                } else {
-                    e8(e, 0xF0); mem_op_rdx(e, szlog, 0, memop, hb);
-                }
-            } else {                             /* need old: cmpxchg loop */
-                ld_zext_rdx(e, szlog);           /* rax = expected */
-                const u8 *loop = e->rx;
-                mov_rr(e, 1, RCX, hb);
-                if (kind == AT_LDCLR) {
-                    rex(e, 1, 0, 0, RCX); e8(e, 0xF7); e8(e, 0xD1);  /* not */
-                    op_rr(e, 1, 0x23, RCX, RAX); /* and rcx, rax */
-                } else if (kind == AT_LDEOR) {
-                    op_rr(e, 1, 0x33, RCX, RAX); /* xor rcx, rax */
-                } else {
-                    op_rr(e, 1, 0x0B, RCX, RAX); /* or rcx, rax */
-                }
-                e8(e, 0xF0);                     /* lock cmpxchg [rdx], rcx */
-                mem_op_rdx(e, szlog, 1, 0xB1, RCX);
-                jcc_to(e, CC_NE, loop);          /* rax stays zero-extended */
-            }
-            break;
-        }
-        case AT_LDSMAX: case AT_LDSMIN: case AT_LDUMAX: case AT_LDUMIN: {
-            /* cmpxchg loop; new value = compare-select of old vs operand at
-             * the access width/signedness (decode.c LSE_RMW cases 4-7). The
-             * extended copies feed the compare; the stored value's low bytes
-             * are the same either way, so cmov picks between raw regs. */
-            int sgn = (kind == AT_LDSMAX || kind == AT_LDSMIN);
-            int mx = (kind == AT_LDSMAX || kind == AT_LDUMAX);
-            u8 cc = (u8)(sgn ? (mx ? CC_G : CC_L) : (mx ? CC_A : CC_B));
-            ld_zext_rdx(e, szlog);               /* rax = expected (zext) */
-            const u8 *loop = e->rx;
-            if (sgn) {
-                mov_sext_r(e, szlog, RSI, RAX);  /* va in rsi is dead here */
-                mov_sext_r(e, szlog, RCX, hb);
-                op_rr(e, 1, 0x39, RCX, RSI);     /* cmp rsi, rcx */
-            } else {
-                mov_zext_r(e, szlog, RCX, hb);
-                op_rr(e, 1, 0x39, RCX, RAX);     /* cmp rax, rcx */
-            }
-            op0f_rr(e, 1, (u8)(0x40 | cc), RCX, RAX);   /* old wins: rcx=rax */
-            e8(e, 0xF0);                         /* lock cmpxchg [rdx], rcx */
-            mem_op_rdx(e, szlog, 1, 0xB1, RCX);
-            jcc_to(e, CC_NE, loop);              /* rax = old (zext) */
-            break;
-        }
-        case AT_CAS:
-            mov_zext_rax(e, szlog, hs);          /* expected */
-            e8(e, 0xF0);                         /* lock cmpxchg [rdx], hb */
-            mem_op_rdx(e, szlog, 1, 0xB1, hb);
-            break;                               /* old in rax (still zext) */
-    }
-    u8 *done = jmp_fwd(e);
-
-    /* ---- slow path: re-run the insn in the interpreter ---- */
-    fwd_here(e, slow0);
-    fwd_here(e, slow1);
-    fwd_here(e, slow2);
-    fwd_here(e, slow3);
-    slow_store_dirty(be);
-    mov_rr(e, 1, RDI, R14);                      /* jit_exec1(c, pc, insn) */
-    rex(e, 1, 0, 0, RSI); e8(e, (u8)(0xB8 | RSI)); e64(e, o->imm2pc);
-    mov_ri(e, 0, RDX, (u32)o->imm);
-    ld64(e, RAX, R15, (s32)offsetof(JitEnv, helper_exec1));
-    e8(e, 0xFF); e8(e, 0xD0);
-    op_rr(e, 0, 0x85, RAX, RAX);
-    u8 *ok = jcc_fwd(e, CC_E);
-    exit_plain(be, o->icnt);
-    fwd_here(e, ok);
-    slow_reload_clobbered(be);
-    if (o->dst != VREG_ZERO)
-        ld_home(be, RAX, o->dst);                /* exec_a64 committed it */
-    fwd_here(e, done);
-
-    if (o->dst != VREG_ZERO) {
-        int hd = ra_def(be, o->dst);
-        mov_rr(e, 1, hd, RAX);
-    }
+    sync_all(be);
+    int ha = ra_use(be, o->a);                   /* base = monitor address */
+    ld32(e, RAX, R14, (s32)offsetof(CPU, excl_valid));
+    op_rr(e, 0, 0x85, RAX, RAX);                 /* test eax,eax */
+    be->at_f0 = jcc_fwd(e, CC_E);
+    ld64(e, RAX, R14, (s32)offsetof(CPU, excl_addr));
+    op_rr(e, 1, 0x3B, RAX, ha);                  /* cmp rax, base */
+    be->at_f1 = jcc_fwd(e, CC_NE);
     be->fl = FL_MEM;
 }
-#else
-static void emit_atomic(BE *be, const IRBlock *ir, int i) {
-    (void)ir; (void)i;
-    be->e->overflow = 1;         /* unreachable: IRO_ATOMIC never emitted */
+
+static void emit_atomic_end(BE *be, const IROp *o) {
+    Emit *e = be->e;
+    sync_all(be);
+    invalidate_all(be);
+    if (o->dst != VREG_ZERO)
+        st_imm_r14(e, v_home(o->dst), 0);        /* Rs = 0: stored */
+    u8 *done = jmp_fwd(e);
+    fwd_here(e, be->at_f0);
+    fwd_here(e, be->at_f1);
+    if (o->dst != VREG_ZERO)
+        st_imm_r14(e, v_home(o->dst), 1);        /* Rs = 1: no monitor */
+    fwd_here(e, done);
+    st_imm32_r14(e, (s32)offsetof(CPU, excl_valid), 0);
+    be->fl = FL_MEM;
 }
-#endif /* JIT_BE_ATOMICS */
 
 static int emit_op(BE *be, const IRBlock *ir, int i);
 
@@ -3725,6 +3509,9 @@ static int emit_op(BE *be, const IRBlock *ir, int i) {
             break;
         case IRO_ATOMIC:
             emit_atomic(be, ir, i);
+            break;
+        case IRO_ATOMIC_END:
+            emit_atomic_end(be, o);
             break;
         case IRO_VOP:
             emit_vop(be, o);

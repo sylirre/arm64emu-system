@@ -84,8 +84,9 @@ typedef struct CPU {
     u64 cntpct_base;   /* AE_RTCLOCK mode: host ns at which the counter == 0 */
     u64 timer_skip;    /* deterministic mode: virtual ticks fast-forwarded over WFI idle */
 
-    /* Exclusive monitor (global, single-CPU) */
-    bool excl_valid;
+    /* Exclusive monitor (global, single-CPU). excl_valid is u32, not bool,
+     * so the JIT's 32-bit CPU-struct accesses to it are well-formed. */
+    u32  excl_valid;
     u64  excl_addr;
     u64  excl_size;
 
