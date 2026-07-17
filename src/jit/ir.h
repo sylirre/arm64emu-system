@@ -252,6 +252,9 @@ typedef struct IRBlock {
     u32  ninsns;            /* NATIVE-retired guest insn count (icount delta
                              * added by exit stubs; CALL1 insns not included
                              * — jit_exec1 counts those itself) */
+    u8   ctx_spx;           /* block's SP bank ((tag>>2)&3): 0 = the live SP
+                             * is sp_el[0], so SP_EL0 moves must not bypass
+                             * the backend's SP register cache */
     /* per-op vreg liveness (bit v set = vreg v live after this op), filled
      * by the liveness pass for the allocator's free-after-last-use */
     u64  live_after[IR_MAX_OPS];

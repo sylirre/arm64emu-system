@@ -2035,14 +2035,15 @@ static int emit_op(BE *be, const IRBlock *ir, int i) {
             emit_call1(be, o);
             break;
 
-        case IRO_CPULD: {                        /* dst = *(u64*)(CPU+imm) */
+        case IRO_CPULD: {                        /* dst = *(CPU+imm), w=0: u32
+                                                  * zero-extended */
             int hd = ra_def(be, o->dst);
-            ei(e, enc_ldr(3, (unsigned)hd, 28, (unsigned)o->imm));
+            ei(e, enc_ldr(o->w ? 3 : 2, (unsigned)hd, 28, (unsigned)o->imm));
             break;
         }
         case IRO_CPUST: {
             int ha = ra_use(be, o->a);
-            ei(e, enc_str(3, (unsigned)ha, 28, (unsigned)o->imm));
+            ei(e, enc_str(o->w ? 3 : 2, (unsigned)ha, 28, (unsigned)o->imm));
             break;
         }
         case IRO_FENCE:

@@ -3729,14 +3729,17 @@ static int emit_op(BE *be, const IRBlock *ir, int i) {
             emit_call1(be, o);
             break;
 
-        case IRO_CPULD: {                        /* dst = *(u64*)(CPU+imm) */
+        case IRO_CPULD: {                        /* dst = *(CPU+imm), w=0: u32
+                                                  * zero-extended */
             int hd = ra_def(be, o->dst);
-            ld64(e, hd, R14, (s32)o->imm);       /* movs: flag-safe */
+            if (o->w) ld64(e, hd, R14, (s32)o->imm);   /* movs: flag-safe */
+            else      ld32(e, hd, R14, (s32)o->imm);
             break;
         }
         case IRO_CPUST: {
             int ha = ra_use(be, o->a);
-            st64(e, ha, R14, (s32)o->imm);
+            if (o->w) st64(e, ha, R14, (s32)o->imm);
+            else      st32(e, ha, R14, (s32)o->imm);
             break;
         }
         case IRO_FENCE:                          /* mfence: flag-safe */

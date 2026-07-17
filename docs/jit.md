@@ -79,8 +79,15 @@ is exact: the deadline is capped a block short of the limit and the last
 stretch single-steps through `cpu_step`.
 
 **System instructions.** Hints, DMB/DSB (no-ops in an in-order
-interpreter), `TPIDR_EL0`/`TPIDRRO_EL0` moves and `DC ZVA` (eight probed
-zero stores, mirroring sysreg.c) are inline. Every other `0xD5` system
+interpreter), `DC ZVA` (eight probed zero stores, mirroring sysreg.c),
+and the hot moves that cannot change translation state are inline:
+`TPIDR_EL0`/`TPIDRRO_EL0`/`TPIDR_EL1`, `SP_EL0` (only in blocks whose
+context says the live SP is a different bank — otherwise sp_el[0] may be
+cached in the backend's SP register), `DAIF` reads, `DAIFSet` (masking;
+under AEDBG it stays on the helper so sysreg.c's break-on-mask hook
+fires), and `DCZID_EL0` (constant). `MSR DAIF`/`DAIFClr` are inline but
+still end the block: they may unmask, and the dispatcher must see
+pending IRQ lines at the same boundary the helper path gave. Every other `0xD5` system
 instruction — sysreg moves, TLBI, cache ops — runs through `exec_a64`
 and *ends the block*, because it may change translation state; ISB ends
 the block by definition (context synchronization = re-dispatch). SVC/

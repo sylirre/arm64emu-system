@@ -1465,6 +1465,83 @@ static int fe_insn(IRBlock *ir, const PDEnt *e, u64 pc) {
                            offsetof(CPU, tpidr), 0);
                     break;
                 }
+                /* PSTATE views and banked registers that cannot change
+                 * translation state are plain CPU-struct accesses; sysreg.c
+                 * has no EL guards on any of them, so no gates are needed
+                 * for bug-compatibility. Writes that may UNmask interrupts
+                 * end the block (no helper, but the dispatcher must see
+                 * pending IRQ lines at the same boundary the CALL1 path
+                 * gave); masking writes and reads run straight through. */
+                if ((insn & 0xFFFFFFE0u) == 0xD5384100u && ir->ctx_spx) {
+                    /* MRS Xt, SP_EL0 — the kernel's `current`. Only when
+                     * the live SP is a different bank: at spx==0 sp_el[0]
+                     * may sit dirty in the backend's SP register cache. */
+                    if (rt != 31)
+                        ir_put(ir, IRO_CPULD, 1, (u8)rt, VREG_ZERO, 0, 0,
+                               offsetof(CPU, sp_el), 0);     /* sp_el[0] */
+                    break;
+                }
+                if ((insn & 0xFFFFFFE0u) == 0xD5184100u && ir->ctx_spx) {
+                    ir_put(ir, IRO_CPUST, 1, VREG_ZERO, rx(rt), 0, 0,
+                           offsetof(CPU, sp_el), 0);         /* MSR SP_EL0 */
+                    break;
+                }
+                if ((insn & 0xFFFFFFE0u) == 0xD538D080u) {   /* MRS Xt, TPIDR_EL1 */
+                    if (rt != 31)
+                        ir_put(ir, IRO_CPULD, 1, (u8)rt, VREG_ZERO, 0, 0,
+                               offsetof(CPU, tpidr) + 8, 0); /* tpidr[1] */
+                    break;
+                }
+                if ((insn & 0xFFFFFFE0u) == 0xD518D080u) {   /* MSR TPIDR_EL1, Xt */
+                    ir_put(ir, IRO_CPUST, 1, VREG_ZERO, rx(rt), 0, 0,
+                           offsetof(CPU, tpidr) + 8, 0);
+                    break;
+                }
+                if ((insn & 0xFFFFFFE0u) == 0xD53B4220u) {   /* MRS Xt, DAIF */
+                    if (rt != 31) {
+                        ir_put(ir, IRO_CPULD, 0, (u8)rt, VREG_ZERO, 0, 0,
+                               offsetof(CPU, daif), 0);      /* u32, zext */
+                        ir_put(ir, IRO_ANDI, 1, (u8)rt, (u8)rt, 0, 0,
+                               (u64)(PS_D | PS_A | PS_I | PS_F), 0);
+                    }
+                    break;
+                }
+                if ((insn & 0xFFFFFFE0u) == 0xD51B4220u) {   /* MSR DAIF, Xt */
+                    ir_put(ir, IRO_ANDI, 1, VREG_TMP0, rx(rt), 0, 0,
+                           (u64)(PS_D | PS_A | PS_I | PS_F), 0);
+                    ir_put(ir, IRO_CPUST, 0, VREG_ZERO, VREG_TMP0, 0, 0,
+                           offsetof(CPU, daif), 0);
+                    ir->ninsns++;
+                    ir_put(ir, IRO_JMP, 0, 0, 0, 0, 0, next, 0);
+                    return FE_END;
+                }
+                if ((insn & 0xFFFFF0FFu) == 0xD50340DFu && !g_dbg) {
+                    /* MSR DAIFSet, #imm (local_irq_disable). With AEDBG the
+                     * CALL1 path keeps sysreg.c's break-on-mask hook. */
+                    ir_put(ir, IRO_CPULD, 0, VREG_TMP0, VREG_ZERO, 0, 0,
+                           offsetof(CPU, daif), 0);
+                    ir_put(ir, IRO_ORRI, 1, VREG_TMP0, VREG_TMP0, 0, 0,
+                           (u64)((insn >> 8) & 0xf) << 6, 0);
+                    ir_put(ir, IRO_CPUST, 0, VREG_ZERO, VREG_TMP0, 0, 0,
+                           offsetof(CPU, daif), 0);
+                    break;
+                }
+                if ((insn & 0xFFFFF0FFu) == 0xD50340FFu) {   /* MSR DAIFClr */
+                    ir_put(ir, IRO_CPULD, 0, VREG_TMP0, VREG_ZERO, 0, 0,
+                           offsetof(CPU, daif), 0);
+                    ir_put(ir, IRO_ANDI, 1, VREG_TMP0, VREG_TMP0, 0, 0,
+                           ~((u64)((insn >> 8) & 0xf) << 6), 0);
+                    ir_put(ir, IRO_CPUST, 0, VREG_ZERO, VREG_TMP0, 0, 0,
+                           offsetof(CPU, daif), 0);
+                    ir->ninsns++;
+                    ir_put(ir, IRO_JMP, 0, 0, 0, 0, 0, next, 0);
+                    return FE_END;
+                }
+                if ((insn & 0xFFFFFFE0u) == 0xD53B00E0u) {   /* MRS Xt, DCZID_EL0 */
+                    if (rt != 31)                            /* BS=4 (64B) */
+                        ir_put(ir, IRO_MOVI, 1, (u8)rt, 0, 0, 0, 4, 0);
+                    break;
+                }
                 if ((insn & 0xFFFFF0FFu) == 0xD50330BFu ||   /* DMB */
                     (insn & 0xFFFFF0FFu) == 0xD503309Fu) {   /* DSB */
                     ir_put(ir, IRO_FENCE, 0, VREG_ZERO, VREG_ZERO, 0, 0, 0, 0);
@@ -1643,6 +1720,7 @@ int jit_mem_run_len(const IRBlock *ir, int i) {
 u32 jit_fe_block(CPU *c, u64 pc, IRBlock *ir, u32 max_insns) {
     ir->n = 0;
     ir->ninsns = 0;
+    ir->ctx_spx = (u8)(c->sp_sel ? c->el : 0);
     u32 guest_n = 0;
     u64 p = pc;
     if (max_insns == 0 || max_insns > JIT_MAX_BLOCK_INSNS)
