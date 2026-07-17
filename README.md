@@ -208,6 +208,17 @@ The interpreter runs at **~40 MIPS** (firmware boot prefix, `-O2`, single core).
 A pure interpreter spends its time on the per-instruction work itself — fetch,
 operand extraction, the ALU/memory operation — not on classifying the opcode.
 
+### JIT (`-jit`, off by default)
+
+An opt-in basic-block JIT (ported from the arm64chroot sibling project)
+translates guest code to host x86-64 (an AArch64 backend is included but
+untested on hardware): **~190 MIPS (≈5×)** on the Linux-boot workload,
+>99.6% of instructions native in steady state. The interpreter stays the
+default and the reference — `make test-jit` requires byte-identical CPU
+state between the modes on deterministic boots. Design, full-system
+coherence (SMC store-tracking, block/context keying, IRQ safepoints) and
+debug knobs: [docs/jit.md](docs/jit.md).
+
 ### Decoded-instruction cache — evaluated, not adopted
 
 A **decoded-instruction cache** (the classic "memoize the decode" interpreter
