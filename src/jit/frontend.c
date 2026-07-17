@@ -23,9 +23,9 @@
  * this emulator's monitor is address-match (decode.c ldst_exclusive) — the
  * inline path would diverge from the reference interpreter. */
 #define JIT_FE_ATOMICS    0
-#define JIT_FE_FPSIMD     0
-#define JIT_FE_LDST_EXTRA 0
-#define JIT_FE_LD1        0
+#define JIT_FE_FPSIMD     1
+#define JIT_FE_LDST_EXTRA 1
+#define JIT_FE_LD1        1
 
 enum { FE_CONT, FE_END };
 
@@ -1422,6 +1422,22 @@ static int fe_insn(IRBlock *ir, const PDEnt *e, u64 pc) {
                 put_alu(ir, ops[(sbc << 1) | S], (u8)(insn >> 31),
                         rx(insn & 31), rx((insn >> 5) & 31),
                         rx((insn >> 16) & 31));
+                ir->ninsns++;
+                return FE_CONT;
+            }
+            if (e->op == PD_GENERIC && (insn & 0x3FA00000u) == 0x08800000u) {
+                /* LDAR/STLR (and anything else with o2=1, o1=0 that decode.c
+                 * accepts leniently): the in-order interpreter runs these as
+                 * plain mem_read/mem_write — no monitor effect, no fence —
+                 * so plain accesses match it exactly. The o2=1, o1=1 CAS
+                 * space stays CALL1: exec_a64 remains authoritative for
+                 * whatever it does with those encodings today or after a
+                 * fix. */
+                unsigned szl = insn >> 30, rt = insn & 31, rn = (insn >> 5) & 31;
+                if ((insn >> 22) & 1)
+                    put_ld(ir, rsp(rn), 0, rt, szl, 0, szl == 3, pc);
+                else
+                    put_st(ir, rsp(rn), 0, rx(rt), szl, pc);
                 ir->ninsns++;
                 return FE_CONT;
             }
