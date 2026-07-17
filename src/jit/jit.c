@@ -273,12 +273,27 @@ static const u8 *rx_of(JitEnv *env, const u8 *rw) {
     return env->cache_rx + (rw - env->cache_rw);
 }
 
+/* Empty the indirect-branch cache. The empty pattern is all-ones, not zero:
+ * a probe key is (pc<<2)|ctx, whose bit 3 is always clear (pc is 4-aligned
+ * and this machine's ctx fits in 3 bits), so an all-ones tag can never be
+ * hit — while a zeroed tag would match a `br` to VA 0 at EL1/MMU-off and
+ * jump generated code to a NULL entry pointer. */
+static void jcache_purge(JitEnv *env) {
+    if (env->jc_ndirty <= JIT_JC_DIRTY_MAX) {
+        for (u32 i = 0; i < env->jc_ndirty; i++)
+            env->jcache[env->jc_dirty[i]].tag = ~0ULL;
+    } else {
+        memset(env->jcache, 0xff, sizeof env->jcache);
+    }
+    env->jc_ndirty = 0;
+}
+
 /* Must only run from the dispatcher's C loop, never from a helper while a
  * block is still on the native call stack (its memory would be reused). */
 static void jit_flush_all(JitEnv *env) {
     memset(env->hash, 0, JIT_HASH_SIZE * sizeof *env->hash);
     memset(env->pages, 0, JIT_PAGE_TBL * sizeof *env->pages);
-    memset(env->jcache, 0, sizeof env->jcache);
+    jcache_purge(env);
     env->nblocks = 0;
     env->nedges = 0;
     env->ptr = env->blocks_start_rw;
@@ -310,6 +325,10 @@ static int jit_env_init(JitEnv *env, CPU *c) {
     env->helper_ldv = (void *)jit_ldv;
     env->helper_stv = (void *)jit_stv;
     env->dtlb = g_dtlb;
+    /* Full memset, not jcache_purge: the dirty list is empty here but the
+     * zeroed entries must still become the all-ones empty pattern. */
+    memset(env->jcache, 0xff, sizeof env->jcache);
+    env->jc_gen = g_tlb_gen;
     env->slowmem = getenv("AEJIT_SLOWMEM") != NULL;
     if (g_jit_stats < 0) {
         const char *s = getenv("AEJIT_STATS");
@@ -407,15 +426,21 @@ static void jit_unlink_block(JitEnv *env, JBlock *b) {
 /* Drop translations whose code lies on physical page pa_page. */
 static void jit_drop_page(JitEnv *env, u64 pa_page) {
     JBlock **pp = &env->pages[(u32)(pa_page >> 12) & (JIT_PAGE_TBL - 1)];
+    int dropped = 0;
     while (*pp) {
         JBlock *b = *pp;
         if (b->pa_page == pa_page) {
             *pp = b->page_next;
             jit_unlink_block(env, b);
+            dropped = 1;
         } else {
             pp = &b->page_next;
         }
     }
+    /* jcache entries may point into the dropped blocks; unlike chain edges
+     * they carry no unpatch list, so purge wholesale (page drops are rare —
+     * real SMC only). */
+    if (dropped) jcache_purge(env);
 }
 
 /* ---- helpers called from generated code ---- */
@@ -702,6 +727,13 @@ StepResult jit_step(CPU *c, u64 slice, u64 max_insn) {
             flush_seen = env->flush_count;
             prev = NULL;                /* arena reset: pointer is stale */
         }
+        if (UNLIKELY(env->jc_gen != g_tlb_gen)) {
+            /* TLBI: VA->code bindings may be stale. Every gen-changing path
+             * ends its block, so the purge always runs before the next
+             * generated-code jcache probe can hit. */
+            env->jc_gen = g_tlb_gen;
+            jcache_purge(env);
+        }
 
         u64 pc = c->pc;
         env->ndisp++;
@@ -730,7 +762,7 @@ StepResult jit_step(CPU *c, u64 slice, u64 max_insn) {
         }
 
         u64 ctx = jit_ctx(c);
-        env->ctx = ctx & 3;
+        env->ctx = ctx;                 /* jcache probes OR this into pc<<2 */
         /* Inline D-TLB probes OR these low tag bits into the VA page. Gen,
          * EL and MMU state can only change through block-exiting paths, so
          * refreshing here keeps every probe's compare current. */
@@ -772,6 +804,20 @@ StepResult jit_step(CPU *c, u64 slice, u64 max_insn) {
             ed->next = b->in_head;
             b->in_head = env->nedges++;
         }
+
+        /* Refill the indirect-branch cache: b was just verified (tag +
+         * host page) for this dispatch, so a generated JMPIND probe may
+         * take the same tag straight to b->code until the next TLBI/
+         * flush/page-drop purge. The entry key equals the block tag —
+         * pc<<2 | ctx — never zero-extended pc alone (a `br` to VA 0
+         * must not hit the empty pattern; see jcache_purge). */
+        u32 jci = (u32)(pc >> 2) & (JIT_JC_SIZE - 1);
+        env->jcache[jci].tag = tag;
+        env->jcache[jci].code = b->code;
+        if (env->jc_ndirty < JIT_JC_DIRTY_MAX)
+            env->jc_dirty[env->jc_ndirty] = (u16)jci;
+        if (env->jc_ndirty <= JIT_JC_DIRTY_MAX)   /* saturate, don't wrap */
+            env->jc_ndirty++;
 
         u32 eid = env->enter(env, b->code);
         prev = NULL;

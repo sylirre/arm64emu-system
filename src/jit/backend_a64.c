@@ -2006,10 +2006,16 @@ static int emit_op(BE *be, const IRBlock *ir, int i) {
             ei(e, 0x91000000u |
                   (((u32)offsetof(JitEnv, jcache) & 0xfff) << 10) |
                   (16u << 5) | 16);
-            ei(e, enc_ldstp64(1, 0, 17, 16, 16, 0));   /* ldp x17,x16,[x16] */
+            /* x17 = key = (pc << 2) | env->ctx */
+            ei(e, enc_ldr(3, 17, 27, (unsigned)offsetof(JitEnv, ctx)));
+            /* orr x17, x17, ha, lsl #2 (shifted-reg) */
+            ei(e, 0xAA000000u | ((u32)ha << 16) | (2u << 10) | (17u << 5) | 17);
+            /* ldr ha, [x16] — entry.tag; ha is dead now (pc stored above) */
+            ei(e, enc_ldr(3, (unsigned)ha, 16, 0));
             /* cmp x17, ha : SUBS xzr */
             ei(e, 0xEB000000u | ((u32)ha << 16) | (17u << 5) | 31);
             u8 *miss = bcond_fwd(e, 1);           /* b.ne miss */
+            ei(e, enc_ldr(3, 16, 16, 8));         /* x16 = entry.code */
             ei(e, enc_br(16));
             fwd_here(e, miss);
             ei(e, enc_movn(0, 0, 0, 0));

@@ -38,6 +38,16 @@ philosophy the interpreter's fetch path uses). Exit chaining is
 restricted to same-page, same-ctx successors so a chained jump can never
 cross a translation boundary unverified.
 
+Indirect branches (`RET`/`BR`/`BLR`) probe a small inline cache keyed by
+the full block tag (the dispatcher refills it only after a verified
+lookup). A hit skips the per-dispatch host-page re-verification, so the
+cache is purged on every flush, page drop and TLB-generation change —
+an entry can never outlive the mapping it was verified under, and a VA
+remap *without* TLBI is outside the contract exactly as it is for the
+interpreter's VA-tagged fetch cache. The empty pattern is all-ones
+(a key's bit 3 is always clear), never zero: a zeroed entry would let a
+`br` to VA 0 jump generated code to a NULL pointer.
+
 **Memory accesses.** Generated loads/stores probe the interpreter's own
 host-pointer D-TLB (`mmu.h: DTlbEnt`, a 16-byte-entry ABI): tag compare =
 the access's last-byte page address OR `env->dtlb_ctxgen` (flush

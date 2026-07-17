@@ -100,7 +100,9 @@ typedef struct JitEnv {
     u32 slowmem;                /* every mem op takes the helper path; wired
                                  * on until Stage 2b adapts the inline probe
                                  * (then AEJIT_SLOWMEM=1 forces, bisection) */
-    u64 ctx;                    /* current (EL0|MMU<<1) context bits */
+    u64 ctx;                    /* current 4-bit block ctx (EL0|MMU<<1|spx<<2);
+                                 * jcache probes OR it into pc<<2 */
+    u32 jc_gen;                 /* g_tlb_gen the jcache was last purged at */
     u64 dtlb_ctxgen;            /* low 12 bits of the current dtlb_tag():
                                  * (g_tlb_gen & 0x3ff) << 2 | MMU<<1 | EL0.
                                  * Inline probes OR this into the VA page for
@@ -115,7 +117,21 @@ typedef struct JitEnv {
      * BR/BLR/RET: guest pc -> block entry. Purged on any invalidation. */
 #define JIT_JC_BITS 12
 #define JIT_JC_SIZE (1u << JIT_JC_BITS)
-    struct JCEnt { u64 pc; const u8 *code; } jcache[JIT_JC_SIZE];
+    /* Indirect-branch inline cache: tag = block tag (pc<<2 | ctx); the
+     * probes in generated code OR env->ctx into the target pc. Filled by
+     * the dispatcher after a verified lookup; purged (to ALL-ONES, the
+     * unhittable empty pattern — see jcache_purge) on flush, page drop and
+     * TLB-generation change, so a hit can never outlive the mapping it was
+     * verified under. */
+    struct JCEnt { u64 tag; const u8 *code; } jcache[JIT_JC_SIZE];
+    /* Dirty-index list so a purge clears only the entries actually filled
+     * since the last purge (a TLBI-heavy phase purges constantly but fills
+     * few entries in between; a full 64KB memset per TLBI costs as much as
+     * the IC IVAU flush storm the jcache replaced). Saturation (> MAX
+     * fills) falls back to the full memset. */
+#define JIT_JC_DIRTY_MAX 1024
+    u16 jc_dirty[JIT_JC_DIRTY_MAX];
+    u32 jc_ndirty;
 
     const u8 *epilogue_rx;      /* generated blocks jump here to exit */
     u32 (*enter)(struct JitEnv *env, const u8 *code_rx);   /* returns exit id */
