@@ -279,6 +279,20 @@ bool mem_peek(CPU *c, u64 va, unsigned size, u64 *out) {
     return c->m->last_bus_status == BUS_OK;
 }
 
+bool mmu_probe_pa(CPU *c, u64 va, u64 *pa_out) {
+    if ((c->sctlr[1] & 1) == 0) { *pa_out = va; return true; }
+    TLBEntry *e = &tlb[tlb_idx(va)];
+    if (e->valid && e->gen == g_tlb_gen && e->va_page == (va & ~0xfffULL)
+        && e->el0 == (c->el == 0)) {
+        *pa_out = e->pa_page | (va & 0xfff);
+        return true;
+    }
+    u64 pa_page; u8 ap, uxn, pxn;
+    if (walk(c, va, &pa_page, &ap, &uxn, &pxn)) return false;
+    *pa_out = pa_page | (va & 0xfff);
+    return true;
+}
+
 /* Return a host pointer to the start of a guest physical page if it is backed
  * by RAM or flash, else NULL (MMIO / unmapped — must go through the bus). */
 static u8 *host_page_ptr(Machine *m, u64 pa_page) {

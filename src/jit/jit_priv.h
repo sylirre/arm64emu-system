@@ -134,9 +134,13 @@ typedef struct JitEnv {
     JEdge *edges;               /* incoming-chain edge pool */
     u32 nedges;
     u32 flush_count;            /* invalidates the dispatcher's chain pointer */
-    u32 pending_flush;          /* set by helpers that must not flush mid-block
-                                 * (IC IVAU): the dispatcher flushes before the
-                                 * next dispatch */
+    u32 pending_flush;          /* safety valve: a helper that must not flush
+                                 * mid-block can set this; the dispatcher
+                                 * flushes before the next dispatch. Nothing
+                                 * sets it today (IC IVAU invalidates its one
+                                 * page precisely). */
+    u64 ntrans;                 /* lifetime translations (AEJIT_STATS) */
+    u64 ndisp;                  /* lifetime dispatcher round trips */
 
     /* Self-modifying-code thrash guard: a direct-mapped count of how often
      * each guest page has been invalidated. A page rewritten in a tight loop

@@ -21,6 +21,11 @@ bool mem_write(CPU *c, u64 va, unsigned size, u64 val);
 /* Non-faulting translate+read for diagnostics (false if VA doesn't translate). */
 bool mem_peek(CPU *c, u64 va, unsigned size, u64 *out);
 
+/* Non-faulting VA->PA probe (no TLB fill, no abort, permissions ignored).
+ * Used by the JIT's IC IVAU handling to find the physical page whose
+ * translations to drop. */
+bool mmu_probe_pa(CPU *c, u64 va, u64 *pa_out);
+
 /* Instruction-fetch fast path. Caches the host base pointer of the current code
  * page so sequential fetches skip the TLB hash + bus dispatch. Only the page
  * *translation* is cached (a host base pointer), never decoded bytes — the

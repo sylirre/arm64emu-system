@@ -58,11 +58,16 @@ marked in a physical-page bitmap (`g_jit_code_bitmap`), the D-TLB refuses
 the W bit for them, so every store to such a page takes the slow path,
 which drops the page's blocks after committing (`jit_invalidate_phys_range`).
 Device DMA (`phys_write_blk`: virtio, fw_cfg, warm-reboot reloads) and
-flash CFI programming invalidate the same way. `IC IVAU` additionally
-schedules a conservative full flush at the next dispatch (a flush must
-never run mid-block — code memory would be reused under the running
-block). A page rewritten in a tight loop trips the thrash guard and runs
-interpreted until control leaves it.
+flash CFI programming invalidate the same way. `IC IVAU` resolves its
+target line's page (non-faulting — the instruction is a no-op in
+sysreg.c and never faults) and drops that one page's surviving blocks;
+since store-tracking already invalidated at the store, this is
+belt-and-braces and near-always a bitmap-gated no-op. It must never
+escalate to a full flush: a boot issues one `IC IVAU` per cache line of
+every executable page it faults in (~278k in the reference boot), and
+full-flushing on each cost ~43% of total runtime before this was made
+precise. A page rewritten in a tight loop trips the thrash guard and
+runs interpreted until control leaves it.
 
 **Interrupts and time.** `jit_step` replicates `cpu_step`'s preamble
 (stop → FIQ/IRQ vs DAIF → WFI) exactly, then dispatches blocks until an
@@ -112,7 +117,8 @@ the in-order interpreter does); the `o2=1,o1=1` CAS space stays on
 
 - `AEJIT_MB=N` — code cache size (default 32, max 128).
 - `AEJIT_STATS=1|/path` — rank instruction words still executed via the
-  exec_a64 helper (what to inline next).
+  exec_a64 helper (what to inline next), plus a summary line of lifetime
+  flushes / translations / dispatcher round trips.
 - `AEJIT_DUMP=prefix` — sparse code-cache image + block map for objdump.
 - `AEJIT_PDMAX=N` — translate only PD ops ≤ N natively (bisect a codegen
   bug to a handler class; branches stay native).

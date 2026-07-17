@@ -25,8 +25,10 @@
  *    flush) and the stale tail keeps running to the block's end —
  *    architecturally permitted without IC IVAU+ISB, and bounded at
  *    JIT_MAX_BLOCK_INSNS. Cross-page SMC (module loads, kernel alternatives,
- *    DMA) is exact. IC IVAU additionally forces a conservative full flush at
- *    the next dispatch (pending_flush; a flush must never run mid-block).
+ *    DMA) is exact. IC IVAU drops the (usually already-dropped) target page's
+ *    blocks precisely — never a full flush; a boot issues hundreds of
+ *    thousands of them. pending_flush stays as a dispatcher-side safety
+ *    valve (a full flush must never run mid-block).
  *  - IRQ/timer: the block-entry safepoint exits when c->icount reaches
  *    env->icount_deadline, so chained hot loops return to the run loop at
  *    machine_tick cadence; IRQ lines are only raised by machine_tick /
@@ -141,6 +143,10 @@ static void jstat_dump(void) {
                     (unsigned long long)icount,
                     100.0 * (double)total / (double)icount);
         dprintf(fd, "\n");
+        dprintf(fd, "[jit-stats] %u flushes, %llu translations, %llu dispatches\n",
+                (unsigned)g_jit_env.flush_count,
+                (unsigned long long)g_jit_env.ntrans,
+                (unsigned long long)g_jit_env.ndisp);
         for (u32 i = 0; i < 32 && g_jstat[i].count; i++)
             dprintf(fd, "[jit-stats]  %12llu  %08x  %s\n",
                     (unsigned long long)g_jstat[i].count,
@@ -485,13 +491,21 @@ u32 jit_stv(CPU *c, u64 va, u64 pc, u32 desc) {
     return 0;
 }
 
-/* IC IVAU, Xt: with store-tracking the invalidation already happened at the
- * store, so this is belt-and-braces: run the insn (a no-op in sysreg.c) and
- * schedule a conservative full flush at the next dispatch (never flush from
- * a helper — the running block's memory could be reused). Ends the block. */
+/* IC IVAU, Xt: with store-tracking the real invalidation already happened at
+ * the store (mem_write slow path, DMA and flash hooks), so translations for
+ * the line's page are near-always already gone and the code bitmap is clear.
+ * Belt-and-braces: resolve Xt without faulting (the insn is a no-op in
+ * sysreg.c and never faults — stay bug-compatible) and drop that one page's
+ * surviving blocks. jit_invalidate_phys_range is bitmap-gated and in-helper-
+ * safe (dropped block memory is never reused before a dispatcher-run
+ * flush_all), so this must never escalate to a full flush — a boot issues
+ * hundreds of thousands of IC IVAUs (one per line of every executable page
+ * it faults in). Ends the block: the page may be the running block's own. */
 u32 jit_exec1_ic(CPU *c, u64 pc, u32 insn) {
     jit_exec1(c, pc, insn);
-    g_jit_env.pending_flush = 1;
+    u64 pa;
+    if (mmu_probe_pa(c, reg_x(c, insn & 0x1f), &pa))
+        jit_invalidate_phys_range(pa, 1);
     return 1;
 }
 
@@ -556,6 +570,7 @@ retry:
     be_flush_icache(b->code, env->ptr, (size_t)(e.rw - env->ptr));
     if (UNLIKELY(g_jdump_prefix != NULL)) jdump_block(env, c, b, e.rw);
     env->ptr = env->cache_rw + (((e.rw - env->cache_rw) + 15) & ~15L);
+    env->ntrans++;
     return b;
 }
 
@@ -689,6 +704,7 @@ StepResult jit_step(CPU *c, u64 slice, u64 max_insn) {
         }
 
         u64 pc = c->pc;
+        env->ndisp++;
         const u8 *hp;
         u64 pa_page = 0;
         if (UNLIKELY(!resolve_code_page(c, pc, &hp, &pa_page))) {
