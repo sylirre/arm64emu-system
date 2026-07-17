@@ -8,8 +8,9 @@ calling `exec_a64`, and `make test-jit` requires interpreter-vs-JIT
 byte-identical CPU state on deterministic boots.
 
 Measured on the firmware+Linux boot used by `tests/run_jit_consist.sh`:
-~36 MIPS interpreted, ~190 MIPS with `-jit` (≈5×). Steady state runs
->99.6% of instructions natively.
+~36 MIPS interpreted, ~350 MIPS with `-jit` (≈9.5×). Steady state runs
+>99.8% of instructions natively; the remaining helper residue is
+exclusives, DC/IC maintenance and TLBI.
 
 Ported from the arm64chroot user-mode emulator (same author; its CPU core
 is a copy of this repo's). Its `docs/jit.md` describes the pipeline in
@@ -156,3 +157,11 @@ isolate the instruction class, `AEJIT_SLOWMEM/NOFUSE/NOVRA` to isolate
 machinery, `AEJIT_DUMP` + objdump to read the block. The full gates also
 include `net_smoke.sh` under `EMU_FLAGS=-jit` and an Alpine ISO boot to
 the login prompt.
+
+One gate is mandatory for any frontend change: the **full 1.6B-insn boot
+log compared against the interpreter's** (strip the `[ ts ]` printk
+prefixes; only embedded timestamp values may differ). The consistency
+checkpoints all sit inside the UEFI phase, and a translation bug in an
+instruction UEFI doesn't lean on sails straight past them — a mistyped
+sysreg encoding (CNTVCT misread as DCZID, freezing the guest's clock)
+once passed 5/5 checkpoints and was caught only by this comparison.
