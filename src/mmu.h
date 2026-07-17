@@ -78,7 +78,7 @@ void tlb_flush_all(void);
  *      10-bit slice aliases every 1024 flushes; tlb_flush_all memsets then.
  * pte: 4 KB-aligned host page pointer | write-allowed (bit 1) | read (bit 0).
  *      A zeroed entry has no permission bits, so it can never fast-path. */
-#define DTLB_BITS 10
+#define DTLB_BITS 12
 #define DTLB_SIZE (1u << DTLB_BITS)
 #define DTLB_R    1u
 #define DTLB_W    2u
