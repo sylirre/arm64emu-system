@@ -304,8 +304,7 @@ static int jit_env_init(JitEnv *env, CPU *c) {
     env->helper_ldv = (void *)jit_ldv;
     env->helper_stv = (void *)jit_stv;
     env->dtlb = g_dtlb;
-    /* Hard-wired until Stage 2b adapts the inline probe to DTlbEnt. */
-    env->slowmem = 1;
+    env->slowmem = getenv("AEJIT_SLOWMEM") != NULL;
     if (g_jit_stats < 0) {
         const char *s = getenv("AEJIT_STATS");
         g_jit_stats = s != NULL;
@@ -715,7 +714,11 @@ StepResult jit_step(CPU *c, u64 slice, u64 max_insn) {
         }
 
         u64 ctx = jit_ctx(c);
-        env->ctx = ctx & 3;             /* D-TLB probe bits (Stage 2b) */
+        env->ctx = ctx & 3;
+        /* Inline D-TLB probes OR these low tag bits into the VA page. Gen,
+         * EL and MMU state can only change through block-exiting paths, so
+         * refreshing here keeps every probe's compare current. */
+        env->dtlb_ctxgen = ((u64)(g_tlb_gen & 0x3ff) << 2) | (ctx & 3);
         u64 tag = jit_tag(pc, ctx);
         JBlock *b = jit_lookup(env, tag, hp);
         if (!b) {

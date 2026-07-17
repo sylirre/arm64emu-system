@@ -703,7 +703,10 @@ static void emit_mem(BE *be, const IRBlock *ir, int i) {
      * stored tag the same way.) */
     if (sz > 1) lea_rbd(e, RAX, RSI, (s32)(sz - 1));
     else        mov_rr(e, 1, RAX, RSI);
-    shift_ri(e, 1, 5, RAX, 12);                /* page of the last byte */
+    alu_ri32(e, 1, 4, RAX, 0xFFFFF000u);       /* page ADDRESS of last byte
+                                                * (imm32 sign-extends: ~0xfff) */
+    op_rm(e, 1, 0x0B, RAX, R15,                /* or rax, gen/MMU/EL0 tag bits */
+          (s32)offsetof(JitEnv, dtlb_ctxgen));
     mov_rr(e, 0, RCX, RSI);
     shift_ri(e, 0, 5, RCX, 12);
     alu_ri32(e, 0, 4, RCX, A64_DTLB_ENTRIES - 1);
@@ -712,9 +715,9 @@ static void emit_mem(BE *be, const IRBlock *ir, int i) {
     op_rm(e, 1, 0x39, RAX, RCX, 0);            /* cmp [rcx], rax (tag) */
     slow1 = jcc_fwd(e, CC_NE);
     ld64(e, RDX, RCX, 8);                      /* pte -> rdx */
-    e8(e, 0xF6); e8(e, 0xC2); e8(e, (u8)need); /* test dl, need */
+    e8(e, 0xF6); e8(e, 0xC2); e8(e, (u8)need); /* test dl, need (R=1/W=2) */
     slow2 = jcc_fwd(e, CC_E);
-    alu_ri32(e, 1, 4, RDX, 0xFFFFFFF8u);       /* and rdx, ~7 : host base */
+    alu_ri32(e, 1, 4, RDX, 0xFFFFF000u);       /* and rdx, ~0xfff : host page */
     mov_rr(e, 0, RAX, RSI);
     alu_ri32(e, 0, 4, RAX, 0xfff);             /* page offset */
     op_rr(e, 1, 0x01, RAX, RDX);               /* add rdx, rax : host ptr */
@@ -904,7 +907,9 @@ static void emit_mem_run(BE *be, const IRBlock *ir, int i, int k) {
     /* the probe compares the SPAN's last byte's page against the tag
      * stored for va0's page: any crossing of the whole run mismatches */
     lea_rbd(e, RAX, RSI, (s32)(hi - lo - 1));
-    shift_ri(e, 1, 5, RAX, 12);
+    alu_ri32(e, 1, 4, RAX, 0xFFFFF000u);         /* page address (~0xfff) */
+    op_rm(e, 1, 0x0B, RAX, R15,
+          (s32)offsetof(JitEnv, dtlb_ctxgen));   /* | gen/MMU/EL0 bits */
     mov_rr(e, 0, RCX, RSI);
     shift_ri(e, 0, 5, RCX, 12);
     alu_ri32(e, 0, 4, RCX, A64_DTLB_ENTRIES - 1);
@@ -915,7 +920,7 @@ static void emit_mem_run(BE *be, const IRBlock *ir, int i, int k) {
     ld64(e, RDX, RCX, 8);
     e8(e, 0xF6); e8(e, 0xC2); e8(e, (u8)need);
     slow2 = jcc_fwd(e, CC_E);
-    alu_ri32(e, 1, 4, RDX, 0xFFFFFFF8u);
+    alu_ri32(e, 1, 4, RDX, 0xFFFFF000u);         /* host page (~0xfff) */
     mov_rr(e, 0, RAX, RSI);
     alu_ri32(e, 0, 4, RAX, 0xfff);
     op_rr(e, 1, 0x01, RAX, RDX);                 /* rdx = host ptr of va0 */

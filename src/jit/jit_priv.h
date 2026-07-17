@@ -19,10 +19,9 @@
 #define GUEST_PAGE_SIZE 4096ULL
 
 /* Donor-compat alias: the backends' inline D-TLB probe indexes by entry
- * count. NOTE (Stage 2b): the probe emitters still encode the donor's
- * user-mode entry layout; env->slowmem is hard-wired on until they are
- * adapted to the DTlbEnt tag/pte layout in mmu.h, so the probe is never
- * emitted. */
+ * count. The probe emitters are adapted to mmu.h's DTlbEnt layout: tag =
+ * VA page | env->dtlb_ctxgen (flush generation + MMU + EL0), pte = host
+ * page | W(2) | R(1). Only the interpreter's slow path fills entries. */
 #define A64_DTLB_ENTRIES DTLB_SIZE
 
 /* Inline-exclusives emitter: compiled out (see backend_x86_64.c note). */
@@ -101,9 +100,13 @@ typedef struct JitEnv {
     u32 slowmem;                /* every mem op takes the helper path; wired
                                  * on until Stage 2b adapts the inline probe
                                  * (then AEJIT_SLOWMEM=1 forces, bisection) */
-    u64 ctx;                    /* current (EL0|MMU<<1) context bits, kept
-                                 * fresh by the dispatcher for the Stage-2b
-                                 * inline probe's tag compare */
+    u64 ctx;                    /* current (EL0|MMU<<1) context bits */
+    u64 dtlb_ctxgen;            /* low 12 bits of the current dtlb_tag():
+                                 * (g_tlb_gen & 0x3ff) << 2 | MMU<<1 | EL0.
+                                 * Inline probes OR this into the VA page for
+                                 * the tag compare; refreshed by the
+                                 * dispatcher every iteration (gen/EL/MMU can
+                                 * only change via block-exiting paths) */
     u64 icount_deadline;        /* block-entry safepoint: exit when
                                  * c->icount >= this (bounds IRQ/tick latency
                                  * across chained blocks) */
