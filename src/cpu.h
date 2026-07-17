@@ -96,6 +96,7 @@ typedef struct CPU {
 
     /* Run control */
     bool halted;       /* WFI/WFE: waiting for an event */
+    bool event;        /* WFE event register: set by SEV/SEVL, consumed by WFE */
     bool stop;         /* machine should terminate */
     bool reset;        /* PSCI SYSTEM_RESET: warm-reboot the machine, don't exit */
     u64  icount;       /* retired instruction count */
