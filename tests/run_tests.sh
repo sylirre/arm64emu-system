@@ -31,9 +31,10 @@ for src in "$ASM"/*.S; do
     # Run; capture the HLT line "x0=0x...". Most tests load as a flat -bin image;
     # the virtio-console probe needs the platform (virtio devices exist only when
     # platform_build runs), so run it as firmware with -console virtio instead.
+    # EMU_FLAGS: extra emulator flags (e.g. EMU_FLAGS=-jit for the JIT suite).
     case "$name" in
-        *_vcon) run=("$EMU" -bios "$bin" -console virtio -maxinsn 100000) ;;
-        *)      run=("$EMU" -bin "$bin@$LOAD" -maxinsn 100000) ;;
+        *_vcon) run=("$EMU" ${EMU_FLAGS:-} -bios "$bin" -console virtio -maxinsn 100000) ;;
+        *)      run=("$EMU" ${EMU_FLAGS:-} -bin "$bin@$LOAD" -maxinsn 100000) ;;
     esac
     res="$("${run[@]}" 2>&1 | grep -oE 'x0=0x[0-9a-f]+' | head -1)"
     if [ "$res" = "x0=0x0" ]; then

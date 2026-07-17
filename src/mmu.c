@@ -252,6 +252,18 @@ bool mem_write(CPU *c, u64 va, unsigned size, u64 val) {
     if (!mmu_translate(c, va, ACC_WRITE, &pa)) return false;
     phys_write(c->m, pa, size, val);
     if (c->m->last_bus_status != BUS_OK) return raise_abort(c, va, ACC_WRITE, FSC_EXTERNAL);
+    /* JIT self-modifying-code hook: the D-TLB refuses the W bit for pages
+     * holding translated code, so stores to them always land here — drop
+     * the page's translations now that the store has committed. */
+    if (g_jit_code_bitmap) {
+        u64 pa_page = pa & ~0xfffULL;
+        Machine *m = c->m;
+        if (pa_page >= m->ram_base && pa_page - m->ram_base < m->ram_size) {
+            u64 pfn = (pa_page - m->ram_base) >> 12;
+            if (g_jit_code_bitmap[pfn >> 3] & (1u << (pfn & 7)))
+                jit_invalidate_phys_range(pa, size);
+        }
+    }
     dtlb_fill(c, va, pa);
     return true;
 }
@@ -285,6 +297,7 @@ bool mem_ifetch_slow(CPU *c, u64 va, u32 *insn_out) {
         /* Cache the page translation; bytes are still read live from *host. */
         g_fcache.host = hp;
         g_fcache.page = va & ~0xfffULL;
+        g_fcache.pa_page = pa & ~0xfffULL;
         g_fcache.el0  = (u8)(c->el == 0);
         g_fcache.mmu  = (u8)(c->sctlr[1] & 1);
         __builtin_memcpy(insn_out, hp + (va & 0xfffULL), 4);

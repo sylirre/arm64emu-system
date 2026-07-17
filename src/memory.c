@@ -2,6 +2,7 @@
 /* Copyright 2026 Sylirre */
 /* Physical memory bus: RAM, flash, and MMIO device dispatch. */
 #include "machine.h"
+#include "mmu.h"     /* jit_invalidate_phys_range (SMC coherence hooks) */
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -59,6 +60,9 @@ enum { PG_NONE = 0, PG_WORD, PG_ERASE, PG_BUFCNT, PG_BUFDATA, PG_BUFCONF };
 
 /* Program (clear bits) `size` bytes at flash offset `off` with `val`. */
 static void flash_program(Machine *m, u64 off, unsigned size, u64 val) {
+    /* Firmware code can live in flash: drop JIT translations on the
+     * programmed bytes (no-op when -jit is off). */
+    jit_invalidate_phys_range(m->flash_base + off, size);
     for (unsigned i = 0; i < size; i++)
         m->flash[off + i] &= (u8)(val >> (i * 8));
 }
@@ -226,6 +230,10 @@ void phys_write(Machine *m, u64 pa, unsigned size, u64 value) {
 
 void phys_write_blk(Machine *m, u64 pa, const void *src, u64 len) {
     const u8 *s = src;
+    /* Device DMA / loader writes bypass mem_write's store hook: drop any
+     * JIT translations in the written range (virtio-blk module loads,
+     * fwcfg blobs, warm-reboot DTB restore). Cheap no-op when -jit is off. */
+    jit_invalidate_phys_range(pa, len);
     /* RAM fast path */
     if (pa >= m->ram_base && pa + len <= m->ram_base + m->ram_size) {
         memcpy(m->ram + (pa - m->ram_base), s, len);

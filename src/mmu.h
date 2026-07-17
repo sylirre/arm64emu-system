@@ -30,6 +30,7 @@ bool mem_peek(CPU *c, u64 va, unsigned size, u64 *out);
  * state so EL or MMU-enable changes fall through to the slow path). */
 typedef struct {
     u64  page;   /* VA page base of the cached translation */
+    u64  pa_page;/* physical page of the translation (JIT block identity) */
     u8  *host;   /* host pointer to that guest page (RAM/flash); NULL = invalid */
     u8   el0;    /* EL0 flag of the cached translation */
     u8   mmu;    /* SCTLR_EL1.M of the cached translation */
@@ -85,6 +86,7 @@ extern u32 g_tlb_gen;
  * guest stores fall to the slow path, where the JIT invalidates the page's
  * blocks (self-modifying-code coherence). NULL until a JIT allocates it. */
 extern const u8 *g_jit_code_bitmap;
+void jit_invalidate_phys_range(u64 pa, u64 len);   /* defined in jit/jit.c */
 
 static inline u64 dtlb_tag(const CPU *c, u64 va) {
     return (va & ~0xfffULL) | ((u64)(g_tlb_gen & 0x3ff) << 2)

@@ -20,6 +20,7 @@ set -u
 cd "$(dirname "$0")/../.."
 
 EMU=./arm64emu
+EMU_FLAGS=${EMU_FLAGS:-}
 BIOS=${AE_BIOS:-/usr/share/qemu-efi-aarch64/QEMU_EFI.fd}
 KERNEL=${AE_KERNEL:-$HOME/Image.gz}
 IRD=build/net-test.ird
@@ -51,7 +52,7 @@ curl -sf "http://127.0.0.1:$HTTP_PORT/hello.txt" >/dev/null 2>&1 || \
 
 boot() {  # boot PHASE AEARG [extra emulator args...] -> log on stdout
     local phase=$1 aearg=$2; shift 2
-    timeout 420 "$EMU" -bios "$BIOS" -kernel "$KERNEL" -initrd "$IRD" \
+    timeout 420 "$EMU" $EMU_FLAGS -bios "$BIOS" -kernel "$KERNEL" -initrd "$IRD" \
         -net -append "aetest=$phase aearg=$aearg" "$@" </dev/null 2>&1
 }
 

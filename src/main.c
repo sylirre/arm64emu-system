@@ -4,6 +4,7 @@
 #include "machine.h"
 #include "cpu.h"
 #include "tty.h"
+#include "jit/jit.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,6 +21,7 @@ static void on_signal(int sig) {
     tty_raw_disable();
     if (g_sig_cpu) { cpu_dump(g_sig_cpu); ring_dump(); }
     prof_dump();
+    jit_stats_flush();     /* _exit skips atexit; flush AEJIT_STATS if on */
     _exit(0);
 }
 
@@ -51,7 +53,8 @@ static void usage(const char *p) {
         "usage: %s [-bios FW.fd] [-kernel Image] [-initrd cpio] [-append CMDLINE]\n"
         "          [-drive IMG[,ro] (repeatable)] [-net] [-netfwd tcp|udp:HOST_PORT:GUEST_PORT]\n"
         "          [-virtfs DIR[,tag=TAG][,ro] (repeatable)] [-console pl011|virtio]\n"
-        "          [-m MB] [-bin FLAT@ADDR] [-entry ADDR] [-el N] [-d] [-maxinsn N]\n", p);
+        "          [-m MB] [-bin FLAT@ADDR] [-entry ADDR] [-el N] [-d] [-maxinsn N]\n"
+        "          [-jit]  (native code generation; default off, interpreter)\n", p);
 }
 
 /* True if host paths a and b name the same file. Compares canonical (realpath)
@@ -156,6 +159,7 @@ int main(int argc, char **argv) {
             n_shares++;
         }
         else if (!strcmp(argv[i], "-net")) net_enabled = true;
+        else if (!strcmp(argv[i], "-jit")) g_jit = 1;
         else if (!strcmp(argv[i], "-console") && i + 1 < argc) {
             const char *k = argv[++i];
             if      (!strcmp(k, "pl011"))  console_virtio = false;
@@ -201,6 +205,18 @@ int main(int argc, char **argv) {
     /* Any per-instruction debug facility routes through the single hot-path guard.
      * (g_ring is also set by AECOV, so the coverage finder is covered too.) */
     g_debug_hooks = g_trace | g_rtrace | g_prof | g_ring | (g_tpc != 0);
+
+    /* The JIT batches instructions, so anything per-instruction forces the
+     * interpreter: debug hooks (trace/rtrace/prof/ring/tpc/AECOV) and the
+     * memory watchpoints (which also disable the D-TLB fast path). */
+    if (g_jit && (g_debug_hooks || g_watch || g_vawatch)) {
+        fprintf(stderr, "[jit] disabled: per-instruction debug facility active\n");
+        g_jit = 0;
+    }
+    if (g_jit && !jit_backend_available()) {
+        fprintf(stderr, "[jit] disabled: no code generator for this host\n");
+        g_jit = 0;
+    }
 
     Machine m;
     machine_init(&m, ram_mb << 20);
@@ -269,10 +285,14 @@ int main(int argc, char **argv) {
     unsigned long tick_mask = 0x3ff;     /* AETICK: IRQ-poll granularity (debug) */
     if (getenv("AETICK")) tick_mask = strtoul(getenv("AETICK"), 0, 0);
     for (;;) {
-        if (machine_tick && (++ticker & tick_mask) == 0) machine_tick(&m);
-        StepResult r = cpu_step(&m.cpu);
+        /* -jit: one jit_step covers up to a tick-slice of instructions, so
+         * tick on every return; the interpreter ticks every 1024 steps. */
+        if (machine_tick && (g_jit || (++ticker & tick_mask) == 0)) machine_tick(&m);
+        StepResult r = g_jit ? jit_step(&m.cpu, tick_mask + 1, max_insn)
+                             : cpu_step(&m.cpu);
         if (r == STEP_HALT) {
             if (m.cpu.reset && machine_reset) {   /* PSCI SYSTEM_RESET: warm reboot */
+                jit_reset();                      /* drop all translations */
                 machine_reset(&m, entry, (unsigned)reset_el);
                 /* machine_reset restores the built-in DTB; re-apply file-based
                  * overrides that live in RAM, which the previous OS reused. */

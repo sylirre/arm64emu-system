@@ -11,7 +11,7 @@ WARN     = -Wall -Wextra -Wno-unused-parameter
 DEFS     = -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
 # -fno-math-errno lets __builtin_sqrt/fabs inline to hardware FP ops, so the
 # scalar-FP interpreter needs no libm (keeping the build libc-only, no -lm).
-CFLAGS  ?= $(CSTD) $(OPT) $(WARN) $(DEFS) -fno-math-errno -g
+CFLAGS  ?= $(CSTD) $(OPT) $(WARN) $(DEFS) -Isrc -fno-math-errno -g
 LDFLAGS ?=
 LDLIBS   =
 
@@ -37,3 +37,9 @@ clean:
 
 test: $(BIN)
 	@tests/run_tests.sh
+
+# JIT suite: the asm tests under -jit, then interpreter-vs-jit consistency
+# on a deterministic firmware+Linux boot (byte-identical state checkpoints).
+test-jit: $(BIN)
+	@EMU_FLAGS=-jit tests/run_tests.sh
+	@tests/run_jit_consist.sh
