@@ -47,6 +47,28 @@ test-jit: $(BIN)
 	@EMU_FLAGS=-jit tests/run_tests.sh
 	@tests/run_jit_consist.sh
 
+# Same pair for the -pd interpreter tier.
+.PHONY: test-pd
+test-pd: $(BIN)
+	@EMU_FLAGS=-pd tests/run_tests.sh
+	@tests/run_pd_consist.sh
+
+# The suites plus the full-boot log gate (docs/jit.md: mandatory for frontend
+# changes — the consistency checkpoints all sit inside the UEFI phase).
+.PHONY: test-jit-full test-pd-full
+test-jit-full: test-jit
+	@tests/run_bootlog_gate.sh -jit
+test-pd-full: test-pd
+	@tests/run_bootlog_gate.sh -pd
+
+# Cross-engine differential fuzzing: random blocks over the JIT's inlined
+# surface, interpreter vs -pd vs -jit (+ SLOWMEM/NOFUSE/NOVRA variants),
+# byte-identical HLT line and full register dump required per seed.
+# AE_SEEDS overrides the seed count (default 200); see docs/parity.md.
+.PHONY: fuzz-engines
+fuzz-engines: $(BIN)
+	@tests/run_fuzz_engines.sh
+
 # AArch64-backend validation without ARM hardware: cross-build a static
 # aarch64 binary (clang + lld + Debian cross libc) and run the -jit suite
 # plus one consistency checkpoint under qemu-user emulation. Skips politely
