@@ -136,6 +136,7 @@ void machine_reset(Machine *m, u64 entry, unsigned reset_el) {
 
 void machine_tick(Machine *m) {
     if (m->timer) timer_update(m);
+    if (m->rtc)   pl031_update(m);
     /* Route host keyboard input to the console the guest is actually using:
      * "input follows output". console_active_virtio tracks which console last
      * produced output (set on each device's TX). So firmware/GRUB/earlycon and a

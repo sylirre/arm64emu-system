@@ -36,6 +36,7 @@ for src in "$ASM"/*.S; do
     # EMU_FLAGS: extra emulator flags (e.g. EMU_FLAGS=-jit for the JIT suite).
     case "$name" in
         *_vcon) run=(${AE_RUNNER:-} "$EMU" ${EMU_FLAGS:-} -bios "$bin" -console virtio -maxinsn 100000) ;;
+        *_rtc)  run=(${AE_RUNNER:-} "$EMU" ${EMU_FLAGS:-} -bios "$bin" -maxinsn 100000) ;;   # pl031 needs platform_build
         *)      run=(${AE_RUNNER:-} "$EMU" ${EMU_FLAGS:-} -bin "$bin@$LOAD" -maxinsn 100000) ;;
     esac
     res="$("${run[@]}" 2>&1 | grep -oE 'x0=0x[0-9a-f]+' | head -1)"
