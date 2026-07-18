@@ -1,27 +1,36 @@
 # arm64emu — Not-Implemented Instructions (TODO)
 
-Static survey begun 2026-07-03; **cleaned 2026-07-18** to list only what is still
-unimplemented or approximate. Item numbers are preserved for cross-doc
-references. Companion docs: `TODO_BUGS.md` (incorrect implementations),
-`TODO_OPTIMIZATIONS.md` (performance).
+Static survey begun 2026-07-03; cleaned 2026-07-18 to list only what is still
+unimplemented or approximate, and **refreshed 2026-07-18 (evening)** after the
+v8.1–8.4 ecosystem-extension batch. Item numbers are preserved for cross-doc
+references. Companion doc: `TODO_OPTIMIZATIONS.md` (performance);
+`TODO_BUGS.md` was deleted when its last item closed (see git history).
 
 **Advertised feature contract** (`sysreg.c`): ARMv8.0 FP+AdvSIMD **plus
-FEAT_FP16** (`ID_AA64PFR0=0x110022`, FP/AdvSIMD nibbles = 1), AES+PMULL, SHA1,
-SHA256+SHA512, SHA3, CRC32, **FEAT_LSE** (`ID_AA64ISAR0=0x100212120`).
-`ID_AA64ISAR1=0`.
+FEAT_FP16** (`ID_AA64PFR0=0x110022`), AES+PMULL, SHA1, SHA256+SHA512, SHA3,
+CRC32, **FEAT_LSE**, **FEAT_RDM**, **FEAT_DotProd**, **FEAT_FHM**,
+**FEAT_FLAGM+FLAGM2** (`ID_AA64ISAR0=0x21100110212120`), **FEAT_JSCVT**,
+**FEAT_FCMA**, **FEAT_LRCPC+LRCPC2** (`ID_AA64ISAR1=0x211000`). The m19/m20
+self-tests pin these values.
 
 **Implemented since the audit (see git history):**
-- **All of former §1** (baseline holes) except §1.9 below: half-precision
-  conversions and the full FEAT_FP16 arithmetic surface (now advertised), scalar
-  FRINTA/FRINTX/FRINTI, scalar FCVTAS/FCVTAU, URECPE/URSQRTE, vector by-element
-  SQDMULH/SQRDMULH/SQDMULL, scalar saturating b/h/s shifts, scalar FCVTXN, and
-  FPCR/FPSR (store/return + FPCR.RMode honored in the round helpers).
-- **FEAT_LSE** implemented and advertised (LDADD/…/SWP/CAS/CASP + LDAPR;
-  `tests/asm/m13_lse.S`, kernel logs "LSE atomic instructions").
-- The former §5 lax decodes that executed something (CAS-as-LDAR, three-same-FP
-  default→FADD, ldst_pair opc3) and the §6 FP approximations that were bugs
-  (ties-to-even rounds, unfused FMA, scalar FMAX/FMIN, vector FCVTXN,
-  SADDLV/UADDLV) — all fixed.
+- **All of former §1** (baseline holes): half-precision conversions and the
+  full FEAT_FP16 arithmetic surface, scalar FRINTA/FRINTX/FRINTI, scalar
+  FCVTAS/FCVTAU, URECPE/URSQRTE, vector by-element SQDMULH/SQRDMULH/SQDMULL,
+  scalar saturating b/h/s shifts, scalar FCVTXN, FPCR/FPSR, and finally
+  **CPACR_EL1.FPEN trapping** (EC 0x07, all three engines; `m18_fptrap.S`).
+- **FEAT_LSE** (LDADD/…/SWP/CAS/CASP + LDAPR; `m13_lse.S`).
+- **LDTR/STTR true unprivileged semantics** (EL0 permission view incl. the
+  D-TLB tag) and **AT S1E1R/W, S1E0R/W → PAR_EL1** via a real stage-1 probe
+  (`m17_at_unpriv.S`).
+- **The 2026-07-18 v8.1–8.4 batch** (all differential-tested against
+  qemu-aarch64 -cpu max *before* the ID nibbles flipped; `m19_v84ext.S`,
+  `m20_ext_simd.S`): FEAT_LRCPC2 LDAPUR/STLUR, FEAT_RDM SQRDMLAH/SQRDMLSH,
+  FEAT_DotProd SDOT/UDOT, FEAT_FCMA FCMLA/FCADD, FEAT_FHM FMLAL/FMLSL,
+  FEAT_JSCVT FJCVTZS, FEAT_FLAGM/FLAGM2 CFINV/RMIF/SETF8/SETF16/AXFLAG/XAFLAG.
+  Along the way: the RMIF/SETF-as-ADC misdecode (bits[15:10] now checked), the
+  FMLAL-space and by-element-U lax decodes, vector FRINTX/FRINTI ignoring
+  FPCR.RMode, and scalar FCVTNS rounding ties away instead of to even.
 
 **How gaps surface at runtime:** FP/SIMD fall-throughs log
 `[fpsimd] UNIMPL 0x… at pc=…`; integer/system fall-throughs log only with `-d`.
@@ -30,37 +39,26 @@ SHA256+SHA512, SHA3, CRC32, **FEAT_LSE** (`ID_AA64ISAR0=0x100212120`).
 
 ## 1. Holes inside the advertised baseline
 
-### 1.9 CPACR_EL1.FPEN trapping never enforced
-`fp_trapped` (`cpu.h:54`) is declared but never set or consulted; `exec_a64`
-dispatches to `exec_fpsimd` regardless of CPACR. Modern Linux restores FP on the
-return-to-user path so it boots anyway, but a kernel/hypervisor relying on the
-EL0 FP trap for lazy save/restore would silently see stale vector registers.
-Fix: check CPACR_EL1.FPEN (and EL) at the FP/SIMD dispatch and raise
-`EC_FP_SIMD_TRAP` (0x07). (Also tracked in `TODO_BUGS.md` §2.)
+None known. §1.1–§1.9 are all closed (numbers retired, kept for cross-doc
+references).
 
 ---
 
 ## 2. Unadvertised extensions (absent by design — implement *then* advertise)
 
 Guests probe HWCAPs/ID registers, so none of these can crash today. Ordered by
-ecosystem value if/when pursued. Lesson from the Alpine bring-up (crypto): never
-flip an ID nibble before the implementation is differential-tested.
+ecosystem value if/when pursued. Lesson from the Alpine bring-up (crypto):
+never flip an ID nibble before the implementation is differential-tested.
 
 | Extension | What's missing | Why it might matter |
 |---|---|---|
-| FEAT_LRCPC/LRCPC2 | **LDAPUR/STLUR** (the unscaled forms); LDAPR itself is already implemented in the LSE space. Not advertised (`ISAR1=0`). | C++11 acquire loads in newer toolchains (probed via hwcap). |
-| FEAT_DotProd | SDOT/UDOT (three-same-extra space, undecoded) | quantized ML kernels. |
-| FEAT_RDM | SQRDMLAH/SQRDMLSH | codecs. |
-| FEAT_FCMA | FCMLA/FCADD | complex-number DSP. |
-| FEAT_JSCVT | FJCVTZS | JavaScript engines (V8/JSC probe it). |
-| FEAT_FHM | FMLAL/FMLSL | ML. |
-| FEAT_FLAGM(2) | CFINV/RMIF/SETF8/SETF16/AXFLAG/XAFLAG | minor codegen wins. |
 | FEAT_PAuth | PACIA/AUTIA/BRAA/RETAA/LDRAA… (non-hint forms UNDEF; hint forms already NOP correctly) | security hardening only; NOP-hint behavior is architecturally valid while unadvertised. |
 | FEAT_BTI | hint-space, already NOPs — only the GP page-table bit + trap logic would be new | hardening. |
 | FEAT_MTE | ADDG/SUBG (`dp_immediate` t==0x23 → UNDEF), IRG/GMI/SUBP, STG/LDG family | debugging ecosystems. |
 | FEAT_MOPS | CPYx/SETx memory ops | glibc 2.39+ uses when advertised. |
 | SVE/SVE2, SME | whole 0x04/0x24 encoding majors (`exec_a64` default → UNDEF) | out of scope for now; huge. |
 | BF16/I8MM | BFDOT/BFMMLA/SMMLA… | ML. |
+| FEAT_LRCPC3 | LDAPUR/STLUR SIMD&FP forms, LDAP/STL post-index | niche; LRCPC2 already covers the C++11 story. |
 
 **Deliberately omitted** (keep): SM3/SM4 — decodes reserved in the 0xce space,
 intentionally UNDEF and unadvertised.
@@ -69,30 +67,24 @@ intentionally UNDEF and unadvertised.
 
 ## 3. System instructions / registers: silent RAZ/WI worth knowing about
 
-- **`AT S1E1R/W` etc. are no-ops** and `SYSL` reads return 0 (`sysreg.c:193`);
-  `PAR_EL1` just returns whatever was last MSR'd to it (`sysreg.c:86,147`). A
-  guest using AT for VA→PA probing gets stale/zero PAR. Implement AT on top of
-  `walk()` if a guest ever needs it (KVM-style code, some kexec/hibernate paths).
-  (Also in `TODO_BUGS.md` §2.)
+- **`AT S1E1R/W, S1E0R/W` are implemented** (stage-1 probe → PAR_EL1); the
+  other AT variants (S1E2*, S12E*) remain no-ops and `SYSL` reads return 0 —
+  fine while EL2 isn't modeled.
 - **All TLBI/DC/IC ops accepted** but DC ZVA is the only one with behavior —
   correct for a coherent flat memory model; keep.
 - **Unknown MRS reads as 0, unknown MSR ignored.** Practical, but silently wrong
   values can mask guest bugs — the `-d` log line is the only trace. PMU
-  registers, OSLAR, ID_AA64ZFR0 etc. all take this path (fine). FPCR/FPSR have
-  graduated out of this bucket (explicit sysreg cases now).
+  registers, OSLAR, ID_AA64ZFR0 etc. all take this path (fine).
 - **MSR-immediate PAN/UAO/DIT/SSBS ignored** — consistent with not advertising
-  them; note the LDTR/STTR interplay in §4.
+  them. CFINV/AXFLAG/XAFLAG have graduated out of this bucket (FEAT_FLAGM2).
 
 ---
 
 ## 4. Load/store simplifications (documented, deliberate — keep or note)
 
-- **LDTR/STTR (unprivileged)** execute as ordinary loads/stores with current-EL
-  permissions (`decode.c:588`) — the "unprivileged" override isn't modeled.
-  Harmless while PAN isn't modeled either, but must be revisited together if PAN
-  is ever advertised.
 - **Acquire/release ordering bits are ignored** throughout (LDAR/STLR/LDAXR/
-  LDAPR…) — correct by construction in an in-order, single-CPU interpreter.
+  LDAPR/LDAPUR/STLUR…) — correct by construction in an in-order, single-CPU
+  interpreter.
 - **Exclusive monitor** is address-match only, no size check on STXR vs LDXR;
   fine single-CPU, worth a comment if SMP ever lands.
 
@@ -100,11 +92,13 @@ intentionally UNDEF and unadvertised.
 
 ## 5. Lax decodes: unallocated encodings that still execute *something*
 
-The corruption-risk cases (CAS-as-LDAR, three-same-FP→FADD, ldst_pair opc3) are
-fixed. What remains is cheap-insurance polish: `INS (general)`/vector-copy and a
-few SIMD groups match on fewer fixed bits than the spec, so some unallocated
-encodings "do something plausible" instead of a clean UNDEF. Enumerated with
-file:line in `TODO_BUGS.md` §4 (all minor, differential-noise only).
+The corruption-risk cases are all fixed (CAS-as-LDAR, three-same-FP→FADD,
+ldst_pair opc3, RMIF/SETF-as-ADC, FMLAL-space-as-compare/FADD, by-element
+U-field ignores). What remains is cheap-insurance polish: `INS (general)`/
+vector-copy and a few SIMD groups still match on fewer fixed bits than the
+spec, so some unallocated encodings "do something plausible" instead of a
+clean UNDEF (all minor, differential-noise only). `m16_laxdecode.S` holds the
+regression battery for everything already tightened.
 
 ---
 
@@ -113,25 +107,30 @@ file:line in `TODO_BUGS.md` §4 (all minor, differential-noise only).
 Known, benign deviations from the architecture (candidates for the
 one-instruction differential harness):
 
-4. **FCMPE/FCCMPE aliased to quiet FCMP/FCCMP** (`exec_fpsimd.c:383,428`):
+4. **FCMPE/FCCMPE aliased to quiet FCMP/FCCMP** (`exec_fpsimd.c`):
    signaling-NaN behavior is identical to quiet, since FP exceptions aren't
    modeled. Fine until FPSR cumulative flags exist.
-6. **Vector FRINTX/FRINTI ignore FPCR.RMode** (`exec_fpsimd.c:1644,1706` map to
-   ties-even), and FRINTX never raises Inexact. The *scalar* forms now honor
-   FPCR.RMode; only the vector forms remain fixed-mode.
 7. **No FPSR cumulative flags, no FZ/DN, no NaN-payload guarantees** — a declared
    scope limitation (bit-exactness is validated against the qemu-aarch64 oracle
    with FPCR.FZ=0). Revisit only if a guest demonstrably cares.
+
+(Former item 6 — vector FRINTX/FRINTI ignoring FPCR.RMode — is fixed; the
+scalar and vector forms now share the `(fpcr>>22)&3` mapping, pinned in m20.)
 
 ---
 
 ## 7. Verification recipe
 
-- **Oracle:** `qemu-aarch64` user-mode, one instruction per run — assemble the
-  target insn with fixed register preloads, run under QEMU and `arm64emu -bin`,
-  compare full register state. Regression anchors: `tests/asm/m4_fpsimd.S`,
-  `m8_simd.S`, `m9_simd_int.S`, `m10_simd_scalar.S`, `m7_crypto.S`, and the FP16
-  battery (arm64chroot `tests/c/fp16_*`).
+- **Oracle:** `qemu-aarch64` user-mode. Either one instruction per run with
+  fixed register preloads (compare full register state), or the m13-style
+  dual-mode trick: build the self-test with `-DUSERMODE` (exit code = x0) and
+  run it under `qemu-aarch64 -cpu max` to validate every hand-computed constant
+  against real semantics before trusting it as the emulator's reference.
+  Regression anchors: `tests/asm/m4_fpsimd.S`, `m8_simd.S`, `m9_simd_int.S`,
+  `m10_simd_scalar.S`, `m7_crypto.S`, `m13_lse.S`, **`m19_v84ext.S`,
+  `m20_ext_simd.S`**, and the FP16 battery (arm64chroot `tests/c/fp16_*`).
+  Known oracle flaw: qemu ≤ 8.2 decodes the LDAPUR/STLUR imm9 as unsigned
+  (fixed upstream), so those negative-offset checks are emulator-only.
 - Any §2 extension: implement, differential-test the full encoding group, **then**
   flip the ID nibble/HWCAP — never before.
 - After each change, boot the Alpine ISO and the initramfs image and grep the log

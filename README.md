@@ -141,19 +141,27 @@ tests/          self-checking assembly tests + QEMU differential helpers
 - **Integer ISA**: data-processing (immediate & register), shifts/bitfields,
   conditional select/compare, mul/div/madd/smulh/umulh, rev/rbit/clz/cls,
   **CRC32/CRC32C**, branches, the full load/store family incl. LDP/STP,
-  pre/post/unscaled/register-offset, **STTR/LDTR** (unprivileged),
-  **STNP/LDNP** (non-temporal pair), exclusives and acquire/release.
+  pre/post/unscaled/register-offset, **STTR/LDTR** (true unprivileged
+  semantics), **STNP/LDNP** (non-temporal pair), exclusives, acquire/release,
+  **FEAT_LSE** atomics (LDADD/…/SWP/CAS/CASP/LDAPR), **FEAT_LRCPC2**
+  LDAPUR/STLUR, and the **FEAT_FLAGM/FLAGM2** flag-manipulation set
+  (CFINV/RMIF/SETF8/SETF16/AXFLAG/XAFLAG).
 - **System level**: EL0/EL1, MSR/MRS with a large system-register file, ID
-  registers matched to QEMU's cortex-a57, MMU (48-bit VA, 4 KB granule, blocks &
-  pages, AP/XN/AF) with a software TLB and an instruction-fetch fast path,
-  exception entry/return, SVC/HVC/SMC/BRK, barriers/CLREX/WFI/WFE, TLBI, DC ZVA.
+  registers matched to QEMU's cortex-a57 plus the advertised extensions, MMU
+  (48-bit VA, 4 KB granule, blocks & pages, AP/XN/AF) with a software TLB and
+  an instruction-fetch fast path, exception entry/return (incl. CPACR_EL1.FPEN
+  traps), SVC/HVC/SMC/BRK, barriers/CLREX/WFI/WFE, TLBI, DC ZVA, AT
+  S1E1R/W→PAR_EL1.
 - **FP/SIMD**: scalar floating-point (convert int↔fp, FMOV, FADD/FSUB/FMUL/FDIV,
   FABS/FNEG/FSQRT, FCMP/FCCMP, FCSEL, FCVT, FRINT, FMADD/FMSUB/FNMADD/FNMSUB);
-  Advanced-SIMD load/store multiple structures (LD1–LD4/ST1–ST4), modified
-  immediate (MOVI/MVNI/…), copy (DUP/INS/UMOV/SMOV), three-same vector integer
-  (ADD/SUB/logical/compare/min-max/MUL/ADDP), across-lanes reductions
-  (ADDV/UMAXV/UMINV/…), two-register misc (NOT/NEG/ABS/CNT/compare-with-zero),
-  and shift-by-immediate (SHL/SSHR/USHR/SSHLL/USHLL).
+  the comprehensive Advanced-SIMD surface (loads/stores, modified immediate,
+  copy, three-same, three-different, across-lanes, two-register misc,
+  by-element, shift-by-immediate) with **FEAT_FP16** half-precision arithmetic;
+  ARMv8 **crypto** (AES/PMULL/SHA1/SHA256 + **SHA512/SHA3**); and the v8.1–8.4
+  ecosystem extensions **FEAT_RDM** (SQRDMLAH/SQRDMLSH), **FEAT_DotProd**
+  (SDOT/UDOT), **FEAT_FCMA** (FCMLA/FCADD), **FEAT_FHM** (FMLAL/FMLSL) and
+  **FEAT_JSCVT** (FJCVTZS) — each differential-tested against qemu-aarch64
+  before its ID nibble was advertised.
 - **Platform devices**: GICv2, generic timer (periodic IRQs), PL011 serial,
   PL031 RTC, PSCI (HVC/SMC), fw_cfg (data port + DMA, legacy kernel keys),
   **Intel CFI (pflash_cfi01) NOR flash** so EDK2's UEFI variable store works,
@@ -184,11 +192,13 @@ an exception-return bug (instruction-abort ELR pointing at the wrong PC).
   working CFI-flash variable store.
 - **Linux**: the EFI-stub kernel boots to **userspace** — kernel init completes,
   `/init` runs, and a **BusyBox shell** is reached over the serial console.
-- **Remaining work**: a small tail of Advanced-SIMD opcodes is still grown on
-  demand (the kernel/musl exercise more NEON than the firmware); a subtle
-  correctness issue can surface deep in a complex init script. Interpreter
-  **performance** is ~40 MIPS, so a full distro boot is slow (see *Performance
-  notes* below for why a decoded-instruction cache did **not** help).
+- **Remaining work**: the advertised instruction surface (baseline + FP16 +
+  crypto + the v8.1–8.4 ecosystem extensions) is complete and
+  differential-tested; what remains unimplemented is deliberately unadvertised
+  (PAuth/BTI/MTE/MOPS/SVE — see `docs/todo/TODO_OPCODES.md`). Interpreter
+  **performance** is ~40 MIPS (~90 with `-pd`, ~370 with `-jit`), so a full
+  distro boot under the plain interpreter is slow (see *Performance notes*
+  below for why a decoded-instruction cache did **not** help).
 - **Devices**: **virtio-blk** (`-drive`, disk-backed rootfs), **virtio-net**
   (`-net`, user-mode NAT via the built-in usernet stack in `src/net/`: DHCP,
   DNS redirect, TCP/UDP proxying and `-netfwd` port forwarding over plain
