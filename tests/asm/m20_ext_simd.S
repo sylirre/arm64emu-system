@@ -298,6 +298,58 @@ _start:
     mov     x2, v0.d[0]
     CKX     x2, 0x514054805b185430, 54
 
+    /* ================= FEAT_FHM: FMLAL/FMLSL ================= */
+    ldr     x10, =h8_n
+    ldr     q1, [x10]                    /* f16 (2,3,1,-2 | 4,5,-3,6) */
+    ldr     x10, =h8_m
+    ldr     q2, [x10]                    /* f16 (5,7,9,11 | 13,17,19,23) */
+    ldr     x14, =f4_d                   /* f32 acc (100,200,10,20) */
+
+    ldr     q0, [x14]
+    fmlal   v0.4s, v1.4h, v2.4h
+    mov     x2, v0.d[0]
+    CKX     x2, 0x435d000042dc0000, 55
+    mov     x2, v0.d[1]
+    CKX     x2, 0xc000000041980000, 56
+    ldr     q0, [x14]
+    fmlsl   v0.4s, v1.4h, v2.4h
+    mov     x2, v0.d[0]
+    CKX     x2, 0x4333000042b40000, 57
+    mov     x2, v0.d[1]
+    CKX     x2, 0x422800003f800000, 58
+    ldr     q0, [x14]
+    fmlal2  v0.4s, v1.4h, v2.4h          /* reads h[4..7] */
+    mov     x2, v0.d[0]
+    CKX     x2, 0x438e800043180000, 59
+    mov     x2, v0.d[1]
+    CKX     x2, 0x431e0000c23c0000, 60
+    ldr     q0, [x14]
+    fmlsl2  v0.4s, v1.4h, v2.4h
+    mov     x2, v0.d[0]
+    CKX     x2, 0x42e6000042400000, 61
+    mov     x2, v0.d[1]
+    CKX     x2, 0xc2ec000042860000, 62
+
+    ldr     q0, [x14]
+    fmlal2  v0.2s, v1.2h, v2.2h          /* Q=0 "2" form reads h[2..3], NOT h[4..5] */
+    mov     x2, v0.d[0]
+    CKX     x2, 0x4332000042da0000, 63
+    mov     x2, v0.d[1]
+    CKX     x2, 0x0, 64
+
+    ldr     q0, [x14]
+    fmlal   v0.4s, v1.4h, v2.h[7]        /* by element: idx=H:L:M, 4-bit Rm */
+    mov     x2, v0.d[0]
+    CKX     x2, 0x4386800043120000, 65
+    mov     x2, v0.d[1]
+    CKX     x2, 0xc1d0000042040000, 66
+    ldr     q0, [x14]
+    fmlsl2  v0.4s, v1.4h, v2.h[5]
+    mov     x2, v0.d[0]
+    CKX     x2, 0x42e6000042000000, 67
+    mov     x2, v0.d[1]
+    CKX     x2, 0xc2a4000042740000, 68
+
     /* ============ vector FRINTX/FRINTI honor FPCR.RMode ============ */
     mrs     x4, fpcr
     movz    x5, #0x00C0, lsl #16         /* RMode = 0b11 (toward zero) */

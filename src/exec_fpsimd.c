@@ -1008,6 +1008,21 @@ static void simd_three_same_fp(CPU *c, u32 insn) {
     unsigned key = (U << 6) | (a << 5) | opc;
     V128 vn = c->v[Rn], vm = c->v[Rm], vd = c->v[Rd], r; r.d[0] = r.d[1] = 0;
 
+    /* FEAT_FHM FMLAL/FMLSL (keys 0x1d/0x3d) and FMLAL2/FMLSL2 (0x59/0x79):
+     * f16 -> f32 widening fused MLA into .2s/.4s lanes; sz must be 0. Decoded
+     * ahead of the compare/FADD paths these keys previously fell into. The
+     * "2" forms read source halves [n..2n-1] — h[2..3] when Q=0, not h[4..5];
+     * FMLSL* negate the Vn f16 sign bit before widening (FPNeg16). */
+    if (key == 0x1d || key == 0x3d || key == 0x59 || key == 0x79) {
+        if (sz) { fpsimd_undef(c, insn); return; }
+        unsigned n = Q ? 4 : 2, sel = (key & 0x40) ? n : 0;
+        unsigned neg = (key & 0x20) ? 0x8000u : 0;
+        for (unsigned i = 0; i < n; i++)
+            vset_s(&r, i, fop_s(FOP_MLA, f16_to_f32(vn.h[sel + i] ^ neg),
+                                f16_to_f32(vm.h[sel + i]), vget_s(&vd, i)));
+        c->v[Rd] = r; return;
+    }
+
     int pair = (U == 1) && (opc == 0x18 || opc == 0x1e || (opc == 0x1a && a == 0));
     int cmp  = (opc == 0x1c) || (opc == 0x1d);   /* FCMEQ/GE/GT, FACGE/GT */
     unsigned op;
@@ -1306,6 +1321,19 @@ static void simd_indexed(CPU *c, u32 insn) {
         fcmla_core(c, size, Q, Rn, Rm5, Rd, rot, (int)index); return;
     }
     if (opc == 0x9 || (!U && (opc == 0x1 || opc == 0x5))) { simd_indexed_fp(c, insn); return; }  /* FP by-element */
+    /* FEAT_FHM FMLAL/FMLSL by element (f16 -> f32 widening MLA): size must be
+     * 10, Rm is 4-bit and the index is H:L:M (0-7). Same half-selection and
+     * FPNeg16 rules as the three-same forms above. */
+    if (size == 2 && ((!U && (opc == 0x0 || opc == 0x4)) || (U && (opc == 0x8 || opc == 0xc)))) {
+        unsigned Rm4 = BITS(19, 16), idx = (H << 2) | (L << 1) | M;
+        V128 vn2 = c->v[Rn], vm2 = c->v[Rm4], vd2 = c->v[Rd], r2; r2.d[0] = r2.d[1] = 0;
+        unsigned n = Q ? 4 : 2, sel = U ? n : 0;
+        unsigned neg = (opc & 0x4) ? 0x8000u : 0;
+        float e = f16_to_f32(vm2.h[idx]);
+        for (unsigned i = 0; i < n; i++)
+            vset_s(&r2, i, fop_s(FOP_MLA, f16_to_f32(vn2.h[sel + i] ^ neg), e, vget_s(&vd2, i)));
+        c->v[Rd] = r2; return;
+    }
     if (size == 1)      { Rm = BITS(19, 16); index = (H << 2) | (L << 1) | M; }  /* .H src */
     else if (size == 2) { Rm = BITS(20, 16); index = (H << 1) | L; }             /* .S src */
     else { fpsimd_undef(c, insn); return; }   /* .B/.D have no integer by-element */
