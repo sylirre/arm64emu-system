@@ -515,6 +515,35 @@ static void exec_fp_scalar(CPU *c, u32 insn) {
                 if (dbl) { c->v[Rd].d[0] = reg_x(c, Rn); c->v[Rd].d[1] = 0; }
                 else     { c->v[Rd].d[0] = (u32)reg_x(c, Rn); c->v[Rd].d[1] = 0; }
                 return;
+            case (3 << 3) | 6: {  /* FJCVTZS (FEAT_JSCVT): D -> Wd, ECMAScript ToInt32 */
+                if (!dbl || sf) break;         /* only the double -> W form exists */
+                double v = fp_rd_d(c, Rn);
+                u32 res; int exact = 0;
+                if (v != v || v == __builtin_inf() || v == -__builtin_inf()) {
+                    res = 0;                   /* NaN / Inf -> 0, Z clear */
+                } else {
+                    double t = f_trunc(v);     /* round toward zero, then wrap mod 2^32 */
+                    if (__builtin_fabs(t) < 9223372036854775808.0) {
+                        res = (u32)(s64)t;
+                        /* -0.0 is "inexact" for JavaScript: int32 0 round-trips
+                         * to +0.0, and engines use Z to detect exactly that. */
+                        exact = (t == v && t >= -2147483648.0 && t <= 2147483647.0 &&
+                                 !(v == 0.0 && __builtin_signbit(v)));
+                    } else {
+                        /* |t| >= 2^63: (s64)t is UB, so take the low 32 bits from
+                         * the significand directly; they are all zero once the
+                         * unbiased exponent reaches 84. */
+                        u64 raw = c->v[Rn].d[0];
+                        int e = (int)((raw >> 52) & 0x7ff) - 1023;
+                        u64 frac = (raw & 0xfffffffffffffULL) | (1ULL << 52);
+                        u32 lo = (e - 52 >= 32) ? 0 : (u32)(frac << (e - 52));
+                        res = (raw >> 63) ? (u32)0 - lo : lo;
+                    }
+                }
+                c->nzcv = exact ? PS_Z : 0;    /* the full nibble is written */
+                set_x(c, Rd, res);
+                return;
+            }
             default: break;
         }
         /* FCVT*-to-integer. opcode 000/001 = FCVT{N,P,M,Z}{S,U} with the mode in
@@ -528,7 +557,7 @@ static void exec_fp_scalar(CPU *c, u32 insn) {
                 r = f_round(v);                  /* A: nearest, ties away */
             } else {
                 switch (rmode) {
-                    case 0: r = f_round(v); break;   /* N: nearest */
+                    case 0: r = fround_mode(v, 0); break;  /* N: nearest, ties EVEN */
                     case 1: r = f_ceil(v);  break;   /* P: +inf */
                     case 2: r = f_floor(v); break;   /* M: -inf */
                     default: r = f_trunc(v); break;  /* Z: toward zero */

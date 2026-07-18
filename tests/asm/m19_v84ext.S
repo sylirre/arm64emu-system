@@ -89,6 +89,53 @@ _start:
     mov     sp, x20
     CKX     x2, 0x8899AABBCCDDEEFF, 18
 
+    /* ================= FEAT_JSCVT: FJCVTZS ================= */
+    /* Each case: poison NZCV (all four set), convert, then fold result and
+     * flags into one word: (Wd << 4) | NZCV-nibble. Z alone must survive. */
+.macro JCV off, val, id
+    ldr     d0, [x15, #\off]
+    msr     nzcv, x6
+    fjcvtzs w2, d0
+    mrs     x3, nzcv
+    lsr     x3, x3, #28
+    orr     x2, x3, x2, lsl #4
+    CKX     x2, \val, \id
+.endm
+    ldr     x15, =jdat
+    movz    x6, #0xF000, lsl #16         /* NZCV poison */
+    JCV     0,   0x4, 19                 /* 0.0: exact */
+    JCV     8,   0x0, 20                 /* -0.0: "inexact" for JS, Z=0 */
+    JCV     16,  0x14, 21                /* 1.0 */
+    JCV     24,  0xffffffff4, 22         /* -1.0 wraps to 0xFFFFFFFF, exact */
+    JCV     32,  0x0, 23                 /* 0.5: truncates, inexact */
+    JCV     40,  0xffffffff0, 24         /* -1.5 */
+    JCV     48,  0x7fffffff4, 25         /* INT32_MAX */
+    JCV     56,  0x800000004, 26         /* INT32_MIN */
+    JCV     64,  0x800000000, 27         /* 2^31 wraps, Z=0 */
+    JCV     72,  0x7fffffff0, 28         /* -(2^31+1) wraps */
+    JCV     80,  0x50, 29                /* 2^32+5 -> 5 */
+    JCV     88,  0x10, 30                /* 2^52+1 -> 1 */
+    JCV     96,  0x0, 31                 /* 2^63 */
+    JCV     104, 0x0, 32                 /* -2^63 */
+    JCV     112, 0x0, 33                 /* 2^80: low 32 bits clear */
+    JCV     120, 0x800000000, 34         /* 2^63+2^31 */
+    JCV     128, 0xc00000000, 35         /* -(2^63+5*2^30) */
+    JCV     136, 0x0, 36                 /* NaN -> 0 */
+    JCV     144, 0x0, 37                 /* +Inf -> 0 */
+    JCV     152, 0x0, 38                 /* -Inf -> 0 */
+    JCV     160, 0x0, 39                 /* smallest subnormal */
+    JCV     168, 0x800000000, 40         /* 2^83+2^31 */
+
+    /* scalar FCVTNS ties must round to EVEN (FCVTAS ties away) */
+    ldr     d0, [x15, #176]              /* 2.5 */
+    fcvtns  w2, d0
+    CKX     x2, 2, 41
+    fcvtas  w2, d0
+    CKX     x2, 3, 42
+    ldr     d0, [x15, #184]              /* 3.5 */
+    fcvtns  w2, d0
+    CKX     x2, 4, 43
+
     /* all good */
     movz    x0, #0
     b       done
@@ -108,3 +155,27 @@ d64:    .quad 0x8899AABBCCDDEEFF
         .quad 0x0011223344556677
 d64b:   .quad 0xAAAAAAAAAAAAAAAA        /* STLUR grid target */
 d64c:   .quad 0xAAAAAAAAAAAAAAAA        /* negative-offset store target */
+jdat:   .quad 0x0000000000000000        /*  0.0  */
+        .quad 0x8000000000000000        /* -0.0  */
+        .quad 0x3FF0000000000000        /*  1.0  */
+        .quad 0xBFF0000000000000        /* -1.0  */
+        .quad 0x3FE0000000000000        /*  0.5  */
+        .quad 0xBFF8000000000000        /* -1.5  */
+        .quad 0x41DFFFFFFFC00000        /*  2147483647.0 */
+        .quad 0xC1E0000000000000        /* -2147483648.0 */
+        .quad 0x41E0000000000000        /*  2^31 */
+        .quad 0xC1E0000000200000        /* -(2^31+1) */
+        .quad 0x41F0000000500000        /*  2^32+5 */
+        .quad 0x4330000000000001        /*  2^52+1 */
+        .quad 0x43E0000000000000        /*  2^63 */
+        .quad 0xC3E0000000000000        /* -2^63 */
+        .quad 0x44F0000000000000        /*  2^80 */
+        .quad 0x43E0000000100000        /*  2^63+2^31 */
+        .quad 0xC3E0000000280000        /* -(2^63+5*2^30) */
+        .quad 0x7FF8000000000000        /*  NaN  */
+        .quad 0x7FF0000000000000        /*  +Inf */
+        .quad 0xFFF0000000000000        /*  -Inf */
+        .quad 0x0000000000000001        /*  min subnormal */
+        .quad 0x4520000000000001        /*  2^83+2^31 */
+        .quad 0x4004000000000000        /*  2.5 (FCVTNS tie) */
+        .quad 0x400C000000000000        /*  3.5 (FCVTNS tie) */
