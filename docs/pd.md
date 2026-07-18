@@ -51,8 +51,12 @@ if both `-pd` and `-jit` are given.
 
 `icount` is exact (every instruction, including fetch-aborted ones). Verified
 byte-identical against the plain interpreter at 1M/4M/16M/64M/300M via
-`tests/run_pd_consist.sh`, and across the full asm suite under `EMU_FLAGS=-pd`.
+`tests/run_pd_consist.sh` (`make test-pd`), across the full asm suite under
+`EMU_FLAGS=-pd`, by the full-boot log gate (`make test-pd-full`), and by the
+cross-engine fuzzer (`make fuzz-engines`) — see `docs/parity.md`.
 Like `-jit`, the only accepted deviation is tick-cadence: timer-IRQ delivery
 points can shift printk timestamps deep in a long boot (console *content* stays
 identical). Forced off when a per-instruction debug facility is active
 (`-d`/trace/watchpoints), which expects one `exec_a64` per step.
+`AEPD_MAX=N` dispatches only PD ops ≤ N natively (0 = pure interpreter) —
+the `-pd` bisection knob, analogous to `AEJIT_PDMAX`.

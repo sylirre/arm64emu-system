@@ -167,8 +167,10 @@ include `net_smoke.sh` under `EMU_FLAGS=-jit` and an Alpine ISO boot to
 the login prompt.
 
 One gate is mandatory for any frontend change: the **full 1.6B-insn boot
-log compared against the interpreter's** (strip the `[ ts ]` printk
-prefixes; only embedded timestamp values may differ). The consistency
+log compared against the interpreter's** — scripted as
+`tests/run_bootlog_gate.sh` (`make test-jit-full`; also takes `-pd`). It
+strips the `[ ts ]` printk prefixes and the clock-derived audit stamps;
+anything still differing fails the gate. The consistency
 checkpoints all sit inside the UEFI phase, and a translation bug in an
 instruction UEFI doesn't lean on sails straight past them — a mistyped
 sysreg encoding (CNTVCT misread as DCZID, freezing the guest's clock)
@@ -178,3 +180,8 @@ once passed 5/5 checkpoints and was caught only by this comparison.
 lld + the Debian cross libc) and runs the suite plus a consistency
 checkpoint under qemu-user — the standing guard that keeps the second
 backend executable, not merely compilable.
+
+`make fuzz-engines` runs the cross-engine differential fuzzer over the
+inlined surface (random blocks, interpreter vs `-pd` vs `-jit` and its
+SLOWMEM/NOFUSE/NOVRA variants). See `docs/parity.md` for the full parity
+audit, verification matrix, and the bugs this fuzzer has caught.
