@@ -240,6 +240,15 @@ _start:
     lsr     x3, x3, #28
     CKX     x3, 0x7, 58                  /* low half zero, bit16 -> Z,V; C kept */
 
+#ifndef USERMODE
+    /* Advertised-contract pin: the ID nibbles must match what this file
+     * exercises. Emulator-only — a Linux host sanitizes EL0 ID-reg reads. */
+    mrs     x2, id_aa64isar0_el1
+    CKX     x2, 0x21100110212120, 59
+    mrs     x2, id_aa64isar1_el1
+    CKX     x2, 0x211000, 60
+#endif
+
     /* all good */
     movz    x0, #0
     b       done
