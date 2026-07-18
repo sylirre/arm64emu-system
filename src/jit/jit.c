@@ -37,6 +37,7 @@
  *    tags carry g_tlb_gen — TLBI correctness is inherited from the
  *    interpreter, with no separate JIT resync protocol. */
 #include <fcntl.h>
+#include <fenv.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -139,10 +140,16 @@ static void jstat_dump(void) {
         qsort(g_jstat, JSTAT_SLOTS, sizeof *g_jstat, jstat_cmp);
         dprintf(fd, "[jit-stats] %llu helper insns",
                 (unsigned long long)total);
-        if (icount)
+        if (icount) {
+            /* The percentage math is the one host-FP use outside guest FP:
+             * fence it so the sticky FPSR flag accumulation never sees it. */
+            fexcept_t saved;
+            fegetexceptflag(&saved, FE_ALL_EXCEPT);
             dprintf(fd, " / %llu executed (%.2f%%)",
                     (unsigned long long)icount,
                     100.0 * (double)total / (double)icount);
+            fesetexceptflag(&saved, FE_ALL_EXCEPT);
+        }
         dprintf(fd, "\n");
         dprintf(fd, "[jit-stats] %u flushes, %llu translations, %llu dispatches\n",
                 (unsigned)g_jit_env.flush_count,

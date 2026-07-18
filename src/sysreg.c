@@ -10,6 +10,12 @@
 u64 gt_count(CPU *c, bool virt) __attribute__((weak));
 void timer_update(struct Machine *m) __attribute__((weak));
 
+/* FPSR cumulative-flag fold, provided by exec_fpsimd.c (M4): host FP flags
+ * and the software-raised bits accumulate lazily and are only folded into
+ * c->fpsr when the guest touches FPSR (or on reset). Weak so M2 standalone
+ * links without the FP unit. */
+void fpsr_sync(CPU *c) __attribute__((weak));
+
 static u64 timer_count(CPU *c, bool virt) {
     if (gt_count) return gt_count(c, virt);
     return c->icount;   /* rough fallback for M2 standalone */
@@ -114,6 +120,7 @@ static void do_mrs(CPU *c, unsigned key, unsigned Rt) {
             v = c->fpcr; break;                              /* FPCR */
         case KEY(3,3,4,4,1):
             if (c->fp_trapped) { cpu_fp_trap(c); return; }
+            if (fpsr_sync) fpsr_sync(c);                     /* fold pending flags */
             v = c->fpsr; break;                              /* FPSR */
         case KEY(3,0,4,0,0): v = c->spsr[1]; break;          /* SPSR_EL1 */
         case KEY(3,0,4,0,1): v = c->elr[1]; break;           /* ELR_EL1 */
@@ -180,6 +187,7 @@ static void do_msr(CPU *c, unsigned key, unsigned Rt) {
             c->fpcr = (u32)v; break;
         case KEY(3,3,4,4,1):                                           /* FPSR */
             if (c->fp_trapped) { cpu_fp_trap(c); return; }
+            if (fpsr_sync) fpsr_sync(c);   /* discard pending host/soft flags */
             c->fpsr = (u32)v; break;
         case KEY(3,0,4,0,0): c->spsr[1] = v; break;                    /* SPSR_EL1 */
         case KEY(3,0,4,0,1): c->elr[1] = v; break;                     /* ELR_EL1 */
@@ -232,4 +240,5 @@ void sysreg_init(CPU *c) {
     c->cpacr_el1 = 0x300000;
     cpu_refresh_fp_trap(c);
     c->mdscr_el1 = 0;
+    if (fpsr_sync) { fpsr_sync(c); c->fpsr = 0; }  /* drop pre-reset FP flags */
 }
