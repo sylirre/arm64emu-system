@@ -786,6 +786,80 @@ static u64 sqrdmlah_op(s64 d, s64 a, s64 b, unsigned esize, int sub) {
     return sat_s((s64)(acc >> esize), esize);
 }
 
+/* FEAT_FCMA FCMLA core, shared by the vector and by-element forms. Lanes are
+ * complex pairs (even=real, odd=imag); per the pseudocode each output line is
+ * one fused FPMulAdd and the rot negation applies to the *Vm* element (which
+ * matters for NaN signs). rot 0/90/180/270 -> (e1,e2,e3,e4) so that
+ * d.r += e2*e1 and d.i += e4*e3; rot0+rot90 accumulate a full complex multiply.
+ * midx: broadcast Vm pair index for the by-element form, -1 = per-pair Vm.
+ * Halves widen through f16->double, one fused step, one narrow (53 >= 2*11+2,
+ * so the double rounding is exact — the established FP16 pattern). */
+#define FCMLA_ROT(rot, nr, ni, mr, mi) \
+    switch (rot) { \
+        case 0:  e1 = (mr);  e2 = (nr); e3 = (mi);  e4 = (nr); break; \
+        case 1:  e1 = -(mi); e2 = (ni); e3 = (mr);  e4 = (ni); break; \
+        case 2:  e1 = -(mr); e2 = (nr); e3 = -(mi); e4 = (nr); break; \
+        default: e1 = (mi);  e2 = (ni); e3 = -(mr); e4 = (ni); break; \
+    }
+static void fcmla_core(CPU *c, unsigned size, unsigned Q, unsigned Rn,
+                       unsigned Rm, unsigned Rd, unsigned rot, int midx) {
+    V128 vn = c->v[Rn], vm = c->v[Rm], vd = c->v[Rd], r; r.d[0] = r.d[1] = 0;
+    unsigned pairs = ((Q ? 16u : 8u) >> size) >> 1;
+    for (unsigned p = 0; p < pairs; p++) {
+        unsigned mp = (midx >= 0) ? (unsigned)midx : p;
+        if (size == 2) {
+            float nr = vget_s(&vn, 2*p), ni = vget_s(&vn, 2*p + 1);
+            float mr = vget_s(&vm, 2*mp), mi = vget_s(&vm, 2*mp + 1);
+            float e1, e2, e3, e4;
+            FCMLA_ROT(rot, nr, ni, mr, mi)
+            vset_s(&r, 2*p,     fop_s(FOP_MLA, e2, e1, vget_s(&vd, 2*p)));
+            vset_s(&r, 2*p + 1, fop_s(FOP_MLA, e4, e3, vget_s(&vd, 2*p + 1)));
+        } else if (size == 3) {
+            double nr = vget_d(&vn, 0), ni = vget_d(&vn, 1);
+            double mr = vget_d(&vm, 0), mi = vget_d(&vm, 1);
+            double e1, e2, e3, e4;
+            FCMLA_ROT(rot, nr, ni, mr, mi)
+            vset_d(&r, 0, fop_d(FOP_MLA, e2, e1, vget_d(&vd, 0)));
+            vset_d(&r, 1, fop_d(FOP_MLA, e4, e3, vget_d(&vd, 1)));
+        } else {                                     /* size == 1: half */
+            double nr = (double)f16_to_f32(vn.h[2*p]), ni = (double)f16_to_f32(vn.h[2*p + 1]);
+            double mr = (double)f16_to_f32(vm.h[2*mp]), mi = (double)f16_to_f32(vm.h[2*mp + 1]);
+            double e1, e2, e3, e4;
+            FCMLA_ROT(rot, nr, ni, mr, mi)
+            r.h[2*p]     = f64_to_f16(fop_d(FOP_MLA, e2, e1, (double)f16_to_f32(vd.h[2*p])));
+            r.h[2*p + 1] = f64_to_f16(fop_d(FOP_MLA, e4, e3, (double)f16_to_f32(vd.h[2*p + 1])));
+        }
+    }
+    c->v[Rd] = r;
+}
+
+/* FEAT_FCMA FCADD: complex add with the Vm pair swapped and one side negated.
+ * rot=0 (#90): d.r = n.r - m.i, d.i = n.i + m.r; rot=1 (#270) flips the signs. */
+static void fcadd_core(CPU *c, unsigned size, unsigned Q, unsigned Rn,
+                       unsigned Rm, unsigned Rd, unsigned rot) {
+    V128 vn = c->v[Rn], vm = c->v[Rm], r; r.d[0] = r.d[1] = 0;
+    unsigned pairs = ((Q ? 16u : 8u) >> size) >> 1;
+    for (unsigned p = 0; p < pairs; p++) {
+        if (size == 2) {
+            float ar = vget_s(&vm, 2*p + 1), ai = vget_s(&vm, 2*p);
+            if (rot == 0) ar = -ar; else ai = -ai;
+            vset_s(&r, 2*p,     fop_s(FOP_ADD, vget_s(&vn, 2*p), ar, 0));
+            vset_s(&r, 2*p + 1, fop_s(FOP_ADD, vget_s(&vn, 2*p + 1), ai, 0));
+        } else if (size == 3) {
+            double ar = vget_d(&vm, 1), ai = vget_d(&vm, 0);
+            if (rot == 0) ar = -ar; else ai = -ai;
+            vset_d(&r, 0, fop_d(FOP_ADD, vget_d(&vn, 0), ar, 0));
+            vset_d(&r, 1, fop_d(FOP_ADD, vget_d(&vn, 1), ai, 0));
+        } else {                                     /* size == 1: half */
+            double ar = (double)f16_to_f32(vm.h[2*p + 1]), ai = (double)f16_to_f32(vm.h[2*p]);
+            if (rot == 0) ar = -ar; else ai = -ai;
+            r.h[2*p]     = f64_to_f16((double)f16_to_f32(vn.h[2*p]) + ar);
+            r.h[2*p + 1] = f64_to_f16((double)f16_to_f32(vn.h[2*p + 1]) + ai);
+        }
+    }
+    c->v[Rd] = r;
+}
+
 /* SUQADD: signed accumulator `d` + UNSIGNED addend `a`, clamped to the signed
  * range. For esize==64 the addend must stay unsigned (casting it to s64 would
  * misread a large value as negative); since a>=0, only the upper bound can be
@@ -1222,7 +1296,16 @@ static void simd_indexed(CPU *c, u32 insn) {
     unsigned Q = BIT(30), U = BIT(29), size = BITS(23, 22), opc = BITS(15, 12);
     unsigned Rn = BITS(9, 5), Rd = BITS(4, 0);
     unsigned L = BIT(21), H = BIT(11), M = BIT(20), Rm, index;
-    if (opc == 0x1 || opc == 0x5 || opc == 0x9) { simd_indexed_fp(c, insn); return; }  /* FP by-element */
+    if (U && (opc & 0x9) == 0x1) {                   /* FCMLA by element (FEAT_FCMA), rot=bits[14:13] */
+        unsigned rot = (opc >> 1) & 3, Rm5 = BITS(20, 16);
+        /* Vm is read at datasize width, so the pair index stays inside it:
+         * .4h pairs 0-1, .8h pairs 0-3, .4s (Q required) pairs 0-1. */
+        if (size == 1)      { index = (H << 1) | L; if (!Q && index > 1) { fpsimd_undef(c, insn); return; } }
+        else if (size == 2 && Q) index = H;
+        else { fpsimd_undef(c, insn); return; }
+        fcmla_core(c, size, Q, Rn, Rm5, Rd, rot, (int)index); return;
+    }
+    if (opc == 0x9 || (!U && (opc == 0x1 || opc == 0x5))) { simd_indexed_fp(c, insn); return; }  /* FP by-element */
     if (size == 1)      { Rm = BITS(19, 16); index = (H << 2) | (L << 1) | M; }  /* .H src */
     else if (size == 2) { Rm = BITS(20, 16); index = (H << 1) | L; }             /* .S src */
     else { fpsimd_undef(c, insn); return; }   /* .B/.D have no integer by-element */
@@ -2759,6 +2842,14 @@ static void simd_three_same_extra(CPU *c, u32 insn) {
         }
         if (!Q) r.d[1] = 0;
         c->v[Rd] = r; return;
+    }
+    if (U == 1 && (opc & 0xc) == 0x8) {              /* FCMLA #(rot*90), FEAT_FCMA */
+        if (size == 0 || (size == 3 && !Q)) { fpsimd_undef(c, insn); return; }
+        fcmla_core(c, size, Q, Rn, Rm, Rd, opc & 3, -1); return;
+    }
+    if (U == 1 && (opc & 0xd) == 0xc) {              /* FCADD #90/#270, FEAT_FCMA */
+        if (size == 0 || (size == 3 && !Q)) { fpsimd_undef(c, insn); return; }
+        fcadd_core(c, size, Q, Rn, Rm, Rd, (opc >> 1) & 1); return;
     }
     fpsimd_undef(c, insn);
 }
