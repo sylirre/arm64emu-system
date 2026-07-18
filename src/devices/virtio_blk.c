@@ -25,7 +25,8 @@
  * added per-instance in virtio_blk_create; the base set stays minimal. */
 #define VIRTIO_F_VERSION_1 (1ULL << 32)
 #define VIRTIO_BLK_F_RO    (1ULL << 5)
-#define BLK_FEATURES       VIRTIO_F_VERSION_1
+#define VIRTIO_BLK_F_FLUSH (1ULL << 9)   /* device honors VIRTIO_BLK_T_FLUSH (fsync) */
+#define BLK_FEATURES       (VIRTIO_F_VERSION_1 | VIRTIO_BLK_F_FLUSH)
 
 /* Split-virtqueue descriptor flags. */
 #define VIRTQ_DESC_F_NEXT  1
@@ -125,8 +126,10 @@ static void blk_request(VirtIOBlk *v, u32 head) {
                     u32 chunk = rem < sizeof(buf) ? rem : (u32)sizeof(buf);
                     if (type == VIRTIO_BLK_T_IN) {
                         memset(buf, 0, chunk);       /* short read => zero-filled tail */
-                        if (pread(v->fd, buf, chunk, (off_t)off) < 0)
+                        if (pread(v->fd, buf, chunk, (off_t)off) < 0) {
                             status = VIRTIO_BLK_S_IOERR;
+                            goto blk_io_done;        /* abort; don't count the failed chunk */
+                        }
                         phys_write_blk(m, gpa, buf, chunk);
                         used_len += chunk;           /* data written to guest */
                     } else {
@@ -137,6 +140,7 @@ static void blk_request(VirtIOBlk *v, u32 head) {
                     off += chunk; gpa += chunk; rem -= chunk;
                 }
             }
+        blk_io_done: ;
         }
     } else if (type == VIRTIO_BLK_T_GET_ID) {
         char id[20]; snprintf(id, sizeof(id), "arm64emu-vblk%d", v->index);

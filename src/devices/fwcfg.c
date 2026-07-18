@@ -47,7 +47,14 @@ static FwItem *find(FwCfg *f, u16 key) {
 
 static FwItem *set_item(FwCfg *f, u16 key, const void *data, u32 len, const char *name) {
     FwItem *it = find(f, key);
-    if (!it) { it = &f->items[f->n++]; it->key = key; }
+    if (!it) {
+        if (f->n >= (int)(sizeof f->items / sizeof f->items[0])) {
+            fprintf(stderr, "fw_cfg: item table full (%d entries), dropping key 0x%x\n",
+                    f->n, key);
+            return NULL;
+        }
+        it = &f->items[f->n++]; it->key = key;
+    }
     else free(it->data);
     it->data = malloc(len ? len : 1);
     if (data) memcpy(it->data, data, len);

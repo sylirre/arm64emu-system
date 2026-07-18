@@ -105,11 +105,29 @@ static void velem_set(V128 *v, unsigned size, unsigned idx, u64 val) {
     }
 }
 
+/* True iff an AdvSIMD-copy encoding (op=bit29, imm4, imm5, Q=bit30) is allocated.
+ * imm5<3:0>==0 has no element size (reserved); .d forms need Q=1; and SMOV/UMOV
+ * are only defined for the size/Q pairs that fit their destination width. The
+ * JIT frontend duplicates this predicate (keep the two in sync). */
+static bool simd_copy_enc_valid(unsigned op, unsigned imm4, unsigned imm5, unsigned Q) {
+    if ((imm5 & 0xf) == 0) return false;            /* no allocated element size */
+    unsigned size = (imm5 & 1) ? 0 : (imm5 & 2) ? 1 : (imm5 & 4) ? 2 : 3;
+    if (op) return true;                            /* INS (element): any size */
+    switch (imm4) {
+        case 0x0: case 0x1: return !(size == 3 && !Q);   /* DUP (element/general): .d needs Q */
+        case 0x3: return true;                           /* INS (general): any size */
+        case 0x5: return size <= (Q ? 2u : 1u);          /* SMOV: Wd{B,H} / Xd{B,H,S} */
+        case 0x7: return Q ? (size == 3) : (size <= 2);  /* UMOV: Wd{B,H,S} / Xd{D} */
+        default: return false;                           /* reserved imm4 */
+    }
+}
+
 /* AdvSIMD copy: DUP/INS/UMOV/SMOV. */
 static void simd_copy(CPU *c, u32 insn) {
     unsigned Q = BIT(30), op = BIT(29);
     unsigned imm5 = BITS(20, 16), imm4 = BITS(14, 11);
     unsigned Rn = BITS(9, 5), Rd = BITS(4, 0);
+    if (!simd_copy_enc_valid(op, imm4, imm5, Q)) { fpsimd_undef(c, insn); return; }
     /* element size = position of lowest set bit in imm5 */
     unsigned size = (imm5 & 1) ? 0 : (imm5 & 2) ? 1 : (imm5 & 4) ? 2 : 3;
     unsigned index = imm5 >> (size + 1);
@@ -1066,6 +1084,9 @@ static void simd_three_same(CPU *c, u32 insn) {
     unsigned esize = 8u << size, n = (Q ? 16 : 8) >> size;
     V128 r; r.d[0] = r.d[1] = 0;
     u64 emask = (esize == 64) ? ~0ULL : ((1ULL << esize) - 1);
+
+    /* PMUL (U=1, opc=0x13) is defined only for .8b/.16b (size==0). */
+    if (U == 1 && opc == 0x13 && size != 0) { fpsimd_undef(c, insn); return; }
 
     /* Pairwise: ADDP (0x17, U=0), S/UMAXP (0x14), S/UMINP (0x15). Output lower
      * half folds pairs of Rn, upper half folds pairs of Rm. */

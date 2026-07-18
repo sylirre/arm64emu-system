@@ -230,6 +230,7 @@ static void dp_register(CPU *c, u32 insn) {
 
     if (op24 == 0x0a) {                            /* logical shifted register */
         unsigned opc = BITS(30, 29), shift = BITS(23, 22), N = BIT(21), imm6 = BITS(15, 10);
+        if (!sf && (imm6 & 0x20)) { undefined(c, insn); return; }  /* imm6>=32 in 32-bit: unallocated */
         u64 op2 = shift_reg(reg_x(c, Rm), shift, imm6, sf);
         if (N) op2 = ~op2;
         u64 n = reg_x(c, Rn), r;
@@ -250,10 +251,13 @@ static void dp_register(CPU *c, u32 insn) {
         u64 op2, n; u32 fl;
         if (ext) {                                 /* add/sub extended register */
             unsigned option = BITS(15, 13), imm3 = BITS(12, 10);
+            if (imm3 > 4) { undefined(c, insn); return; }  /* shift amount 5-7: unallocated */
             op2 = extend_reg(reg_x(c, Rm), option, imm3);
             n = reg_xsp(c, Rn);
         } else {                                   /* add/sub shifted register */
             unsigned shift = BITS(23, 22), imm6 = BITS(15, 10);
+            /* ROR (shift==3) is unallocated for add/sub; imm6>=32 in 32-bit too. */
+            if (shift == 3 || (!sf && (imm6 & 0x20))) { undefined(c, insn); return; }
             op2 = shift_reg(reg_x(c, Rm), shift, imm6, sf);
             n = reg_x(c, Rn);
         }
@@ -266,6 +270,9 @@ static void dp_register(CPU *c, u32 insn) {
     }
     if (op24 == 0x1b) {                            /* data processing (3 source) */
         unsigned op31 = BITS(23, 21), o0 = BIT(15), Ra = BITS(14, 10);
+        /* The widening/high multiplies (op31!=0: S/UMADDL, S/UMSUBL, S/UMULH)
+         * require sf=1; sf=0 is unallocated. MADD/MSUB (op31==0) are valid both. */
+        if (!sf && op31 != 0) { undefined(c, insn); return; }
         u64 n = reg_x(c, Rn), m = reg_x(c, Rm), a = reg_x(c, Ra), r;
         switch ((op31 << 1) | o0) {
             case 0x0: r = a + n * m; break;                                   /* MADD */
@@ -560,6 +567,9 @@ static void ldst_register(CPU *c, u32 insn) {
     unsigned bytes, scale;
     if (V) {
         is_load = opc & 1;
+        /* opc<1> selects the 128-bit Q form, which is defined only for size==0;
+         * size!=0 with opc&2 is unallocated. */
+        if ((opc & 2) && size != 0) { undefined(c, insn); return; }
         bytes = (opc & 2) ? 16 : (1u << size);
         scale = (opc & 2) ? 4 : size;
     } else {

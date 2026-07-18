@@ -451,6 +451,7 @@ static u32 h_readdir(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     u32 count_pos = o.pos; p_u32(&o, 0);       /* placeholder data count */
     u32 data_start = o.pos;
 
+    bool any = false;
     for (;;) {
         long here = telldir(f->dir);
         errno = 0;
@@ -460,8 +461,15 @@ static u32 h_readdir(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
         u32 esz = 13 + 8 + 1 + 2 + (u32)strlen(name);
         if ((o.pos - data_start) + esz > count || o.pos + esz > o.cap) {
             seekdir(f->dir, here);             /* doesn't fit: leave it for next call */
+            /* If not even the first entry fits the client's requested count, an
+             * empty Rreaddir would be read as end-of-directory and silently
+             * truncate the listing. Report EINVAL so the client retries with a
+             * larger count instead. (An empty directory never reaches here.) */
+            if (!any && (o.pos - data_start) + esz > count)
+                return mk_lerror(v, tag, EINVAL, cap);
             break;
         }
+        any = true;
         u8 qt = P9_QTFILE, tbyte = de->d_type; u64 qp;
         char child[PATH_MAX]; struct stat st;
         int need = snprintf(child, sizeof(child), "%s/%s", f->path, name);

@@ -105,13 +105,13 @@ static void do_mrs(CPU *c, unsigned key, unsigned Rt) {
         case KEY(3,3,14,0,0): v = c->cntfrq; break;          /* CNTFRQ_EL0 */
         case KEY(3,3,14,0,1): v = timer_count(c, false); break; /* CNTPCT_EL0 */
         case KEY(3,3,14,0,2): v = timer_count(c, true); break;  /* CNTVCT_EL0 */
-        case KEY(3,3,14,2,0): v = (u64)(s64)(c->cntp_cval - timer_count(c, false)); break; /* CNTP_TVAL */
+        case KEY(3,3,14,2,0): v = (u64)(s32)(c->cntp_cval - timer_count(c, false)); break; /* CNTP_TVAL (signed 32-bit view) */
         case KEY(3,3,14,2,1):                                /* CNTP_CTL_EL0 (+ISTATUS) */
             v = c->cntp_ctl & 3;
             if ((c->cntp_ctl & 1) && timer_count(c, false) >= c->cntp_cval) v |= 4;
             break;
         case KEY(3,3,14,2,2): v = c->cntp_cval; break;       /* CNTP_CVAL_EL0 */
-        case KEY(3,3,14,3,0): v = (u64)(s64)(c->cntv_cval - timer_count(c, true)); break;  /* CNTV_TVAL */
+        case KEY(3,3,14,3,0): v = (u64)(s32)(c->cntv_cval - timer_count(c, true)); break;  /* CNTV_TVAL (signed 32-bit view) */
         case KEY(3,3,14,3,1):                                /* CNTV_CTL_EL0 (+ISTATUS) */
             v = c->cntv_ctl & 3;
             if ((c->cntv_ctl & 1) && timer_count(c, true) >= c->cntv_cval) v |= 4;
