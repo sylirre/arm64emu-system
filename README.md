@@ -144,8 +144,10 @@ tests/          self-checking assembly tests + QEMU differential helpers
   pre/post/unscaled/register-offset, **STTR/LDTR** (true unprivileged
   semantics), **STNP/LDNP** (non-temporal pair), exclusives, acquire/release,
   **FEAT_LSE** atomics (LDADD/…/SWP/CAS/CASP/LDAPR), **FEAT_LRCPC2**
-  LDAPUR/STLUR, and the **FEAT_FLAGM/FLAGM2** flag-manipulation set
-  (CFINV/RMIF/SETF8/SETF16/AXFLAG/XAFLAG).
+  LDAPUR/STLUR, the **FEAT_FLAGM/FLAGM2** flag-manipulation set
+  (CFINV/RMIF/SETF8/SETF16/AXFLAG/XAFLAG), and **FEAT_MOPS** memory
+  copy/set (CPYx/CPYFx/SETx, Option A, incl. the unprivileged forms and
+  the EC 0x27 mismatch exception).
 - **System level**: EL0/EL1, MSR/MRS with a large system-register file, ID
   registers matched to QEMU's cortex-a57 plus the advertised extensions, MMU
   (48-bit VA, 4 KB granule, blocks & pages, AP/XN/AF) with a software TLB and
@@ -161,7 +163,10 @@ tests/          self-checking assembly tests + QEMU differential helpers
   ecosystem extensions **FEAT_RDM** (SQRDMLAH/SQRDMLSH), **FEAT_DotProd**
   (SDOT/UDOT), **FEAT_FCMA** (FCMLA/FCADD), **FEAT_FHM** (FMLAL/FMLSL) and
   **FEAT_JSCVT** (FJCVTZS) — each differential-tested against qemu-aarch64
-  before its ID nibble was advertised.
+  before its ID nibble was advertised. **FPSR is live**: the cumulative
+  exception flags (IOC/DZC/OFC/UFC/IXC), the sticky QC saturation bit, and
+  the quiet-vs-signaling FCMP/FCMPE IOC split all accumulate architecturally
+  across all three engines.
 - **Platform devices**: GICv2, generic timer (periodic IRQs), PL011 serial,
   PL031 RTC, PSCI (HVC/SMC), fw_cfg (data port + DMA, legacy kernel keys),
   **Intel CFI (pflash_cfi01) NOR flash** so EDK2's UEFI variable store works,
@@ -195,7 +200,7 @@ an exception-return bug (instruction-abort ELR pointing at the wrong PC).
 - **Remaining work**: the advertised instruction surface (baseline + FP16 +
   crypto + the v8.1–8.4 ecosystem extensions) is complete and
   differential-tested; what remains unimplemented is deliberately unadvertised
-  (PAuth/BTI/MTE/MOPS/SVE — see `docs/todo/TODO_OPCODES.md`). Interpreter
+  (PAuth/BTI/MTE/SVE — see `docs/todo/TODO_OPCODES.md`). Interpreter
   **performance** is ~40 MIPS (~90 with `-pd`, ~370 with `-jit`), so a full
   distro boot under the plain interpreter is slow (see *Performance notes*
   below for why a decoded-instruction cache did **not** help).
