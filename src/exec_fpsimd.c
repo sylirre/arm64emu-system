@@ -1662,7 +1662,8 @@ static void simd_two_misc_fp(CPU *c, u32 insn) {
             case 0x58: res = fround_mode(x, 4); break;                 /* FRINTA */
             case 0x19: res = fround_mode(x, 2); break;                 /* FRINTM */
             case 0x39: res = fround_mode(x, 3); break;                 /* FRINTZ */
-            case 0x59: case 0x79: res = fround_mode(x, 0); break;      /* FRINTX/FRINTI */
+            case 0x59: case 0x79:                                      /* FRINTX/FRINTI: FPCR.RMode */
+                res = fround_mode(x, (c->fpcr >> 22) & 3); break;
             case 0x1d: res = x; if (dbl) res = (double)(s64)vn.d[i]; else res = (double)(s32)vn.s[i]; break; /* SCVTF */
             case 0x5d: if (dbl) res = (double)(u64)vn.d[i]; else res = (double)(u32)vn.s[i]; break;          /* UCVTF */
             case 0x1a: case 0x3a: case 0x1b: case 0x3b: case 0x1c:     /* FCVT*S (signed) */
@@ -1724,7 +1725,8 @@ static void simd_two_misc_fp16(CPU *c, u32 insn) {
             case 0x58: res = fround_mode(x, 4); break;                 /* FRINTA */
             case 0x19: res = fround_mode(x, 2); break;                 /* FRINTM */
             case 0x39: res = fround_mode(x, 3); break;                 /* FRINTZ */
-            case 0x59: case 0x79: res = fround_mode(x, 0); break;      /* FRINTX/FRINTI */
+            case 0x59: case 0x79:                                      /* FRINTX/FRINTI: FPCR.RMode */
+                res = fround_mode(x, (c->fpcr >> 22) & 3); break;
             case 0x1d: r.h[i] = f64_to_f16((double)(s16)vn.h[i]); done = 1; break; /* SCVTF */
             case 0x5d: r.h[i] = f64_to_f16((double)(u16)vn.h[i]); done = 1; break; /* UCVTF */
             case 0x1a: case 0x3a: case 0x1b: case 0x3b: case 0x1c:     /* FCVT*S (signed) */
