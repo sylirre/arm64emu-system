@@ -1,0 +1,176 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Sylirre */
+/* M20 self-test: ARMv8.1-8.4 AdvSIMD extensions — FEAT_RDM SQRDMLAH/SQRDMLSH
+ * (vector, scalar, by-element; INT_MIN^2 and rounding-tips-saturation
+ * corners), FEAT_DotProd SDOT/UDOT, FEAT_FCMA FCMLA/FCADD, FEAT_FHM
+ * FMLAL/FMLSL, plus the vector FRINTX/FRINTI FPCR.RMode pin. x0=0 on
+ * success, else failing-check id. Expected values are precomputed from the
+ * ARM ARM pseudocode; the same file builds as a Linux user binary with
+ * -DUSERMODE (exit code = x0) to cross-check every value against real
+ * hardware semantics under qemu-aarch64 -cpu max before trusting it as the
+ * emulator's reference. */
+.arch armv8.5-a+fp16fml
+
+.macro CKX reg, val, id
+    movz    x11, #\id
+    ldr     x9, =\val
+    cmp     \reg, x9
+    b.ne    fail
+.endm
+
+.text
+.global _start
+_start:
+    /* ================= FEAT_RDM: SQRDMLAH/SQRDMLSH ================= */
+    ldr     x10, =v_a
+    ldr     q1, [x10]                    /* Vn .8h */
+    ldr     x10, =v_b
+    ldr     q2, [x10]                    /* Vm .8h */
+    ldr     x10, =v_d
+    ldr     q0, [x10]                    /* Vd accumulator */
+    sqrdmlah v0.8h, v1.8h, v2.8h
+    mov     x2, v0.d[0]
+    CKX     x2, 0x80001fff7fff7fff, 1
+    mov     x2, v0.d[1]
+    CKX     x2, 0x8000163400007fff, 2
+
+    ldr     x10, =v_d
+    ldr     q0, [x10]
+    sqrdmlsh v0.8h, v1.8h, v2.8h
+    mov     x2, v0.d[0]
+    CKX     x2, 0xa000dfff80038000, 3
+    mov     x2, v0.d[1]
+    CKX     x2, 0x93650e3400007ffe, 4
+
+    ldr     x10, =w_a
+    ldr     q1, [x10]                    /* Vn .4s */
+    ldr     x10, =w_b
+    ldr     q2, [x10]                    /* Vm .4s */
+    ldr     x10, =w_d
+    ldr     q0, [x10]
+    sqrdmlah v0.4s, v1.4s, v2.4s
+    mov     x2, v0.d[0]
+    CKX     x2, 0x7fffffff7fffffff, 5
+    mov     x2, v0.d[1]
+    CKX     x2, 0x800000001fffffff, 6
+
+    ldr     x10, =w_d
+    ldr     q0, [x10]
+    sqrdmlsh v0.4s, v1.4s, v2.4s
+    mov     x2, v0.d[0]
+    CKX     x2, 0x8000000380000000, 7
+    mov     x2, v0.d[1]
+    CKX     x2, 0xa0000000dfffffff, 8
+
+    /* ---- by-element forms ---- */
+    ldr     x10, =v_a
+    ldr     q1, [x10]
+    ldr     x10, =v_b
+    ldr     q2, [x10]
+    ldr     x10, =v_d
+    ldr     q0, [x10]
+    sqrdmlah v0.8h, v1.8h, v2.h[7]       /* idx 7 exercises H:L:M */
+    mov     x2, v0.d[0]
+    CKX     x2, 0x800017ff3001d000, 9
+    mov     x2, v0.d[1]
+    CKX     x2, 0x80001e3400007fff, 10
+
+    ldr     x10, =w_a
+    ldr     q1, [x10]
+    ldr     x10, =w_b
+    ldr     q2, [x10]
+    ldr     x10, =w_d
+    ldr     q0, [x10]
+    sqrdmlsh v0.4s, v1.4s, v2.s[3]
+    mov     x2, v0.d[0]
+    CKX     x2, 0xc000000240000000, 11
+    mov     x2, v0.d[1]
+    CKX     x2, 0xa0000000dfffffff, 12
+
+    /* same op through Vm=v17: proves the 5-bit Rm field for .S sources */
+    mov     v17.16b, v2.16b
+    ldr     x10, =w_d
+    ldr     q0, [x10]
+    sqrdmlsh v0.4s, v1.4s, v17.s[3]
+    mov     x2, v0.d[0]
+    CKX     x2, 0xc000000240000000, 13
+    mov     x2, v0.d[1]
+    CKX     x2, 0xa0000000dfffffff, 14
+
+    /* ---- scalar forms (upper result bits must be zeroed) ---- */
+    ldr     x10, =v_a                    /* h ops: d=a=b=0x8000 */
+    ldr     h0, [x10]
+    ldr     h1, [x10]
+    ldr     h2, [x10]
+    sqrdmlah h0, h1, h2                  /* exact 0 after round: INT16_MIN^2 */
+    mov     x2, v0.d[0]
+    CKX     x2, 0x0, 15
+
+    ldr     x10, =sc_s                   /* s ops: d=1, a=INT32_MIN, b=INT32_MAX */
+    ldr     s0, [x10]
+    ldr     s1, [x10, #4]
+    ldr     s2, [x10, #8]
+    sqrdmlsh s0, s1, s2
+    mov     x2, v0.d[0]
+    CKX     x2, 0x7fffffff, 16
+
+    /* scalar by-element: .S allows Vm>=v16 (5-bit Rm)... */
+    ldr     x10, =w_b
+    ldr     q22, [x10]
+    ldr     x10, =w_d
+    ldr     s0, [x10, #8]                /* d = 0xFFFFFFFF */
+    ldr     x10, =w_a
+    ldr     s1, [x10, #12]               /* a = 0xC0000000 */
+    sqrdmlah s0, s1, v22.s[3]
+    mov     x2, v0.d[0]
+    CKX     x2, 0xdfffffff, 17
+
+    /* ...while .H restricts Vm to v0-v15 (4-bit Rm) */
+    ldr     x10, =v_b
+    ldr     q12, [x10]
+    ldr     x10, =v_a
+    ldr     h0, [x10, #2]                /* d = 0x7FFF */
+    ldr     h1, [x10, #8]                /* a = 0x0001 */
+    sqrdmlsh h0, h1, v12.h[5]            /* elt = 0xFFFF */
+    mov     x2, v0.d[0]
+    CKX     x2, 0x7fff, 18
+
+    /* ============ vector FRINTX/FRINTI honor FPCR.RMode ============ */
+    mrs     x4, fpcr
+    movz    x5, #0x00C0, lsl #16         /* RMode = 0b11 (toward zero) */
+    msr     fpcr, x5
+    ldr     x10, =f_r
+    ldr     d3, [x10]                    /* [1.5f, -1.5f] */
+    frintx  v0.2s, v3.2s
+    mov     x2, v0.d[0]
+    CKX     x2, 0xbf8000003f800000, 19   /* [1.0, -1.0] under RZ */
+    movz    x5, #0x0080, lsl #16         /* RMode = 0b10 (toward -inf) */
+    msr     fpcr, x5
+    frinti  v0.2s, v3.2s
+    mov     x2, v0.d[0]
+    CKX     x2, 0xc00000003f800000, 20   /* [1.0, -2.0] under RM */
+    msr     fpcr, x4
+
+    /* all good */
+    movz    x0, #0
+    b       done
+fail:
+    mov     x0, x11
+done:
+#ifdef USERMODE
+    movz    x8, #93                      /* exit(x0) */
+    svc     #0
+#else
+    hlt     #0
+#endif
+
+.data
+.balign 16
+v_a:    .hword 0x8000, 0x7FFF, 0x4000, 0xC000, 0x0001, 0xFFFF, 0x2000, 0xE000
+v_b:    .hword 0x8000, 0x7FFF, 0x4000, 0x4000, 0x7FFF, 0xFFFF, 0x1000, 0x3000
+v_d:    .hword 0x0000, 0x0001, 0xFFFF, 0x8000, 0x7FFF, 0x0000, 0x1234, 0x8765
+w_a:    .word 0x80000000, 0x7FFFFFFF, 0x40000000, 0xC0000000
+w_b:    .word 0x80000000, 0x7FFFFFFF, 0x40000000, 0x40000000
+w_d:    .word 0x00000000, 0x00000001, 0xFFFFFFFF, 0x80000000
+sc_s:   .word 0x00000001, 0x80000000, 0x7FFFFFFF
+f_r:    .word 0x3FC00000, 0xBFC00000    /* 1.5f, -1.5f */

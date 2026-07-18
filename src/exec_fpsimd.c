@@ -774,6 +774,18 @@ static u64 usat_add(u64 a, u64 b, unsigned e) {
 }
 static u64 usat_sub(u64 a, u64 b, unsigned e) { (void)e; return (a < b) ? 0 : (a - b); }
 
+/* FEAT_RDM SQRDMLAH/SQRDMLSH core, shared by the vector, scalar and by-element
+ * forms: (d << esize) +/- 2*a*b + (1 << (esize-1)), then one final shift and
+ * saturation. The accumulate happens at double width BEFORE the shift, and
+ * 2*a*b alone overflows s64 at the INT32_MIN^2 corner, so the sum is formed in
+ * 128-bit (cf. SMULH in decode.c). esize is 16 or 32. */
+static u64 sqrdmlah_op(s64 d, s64 a, s64 b, unsigned esize, int sub) {
+    __int128 acc = (__int128)d << esize;
+    __int128 p = (__int128)2 * a * b;
+    acc = (sub ? acc - p : acc + p) + ((s64)1 << (esize - 1));
+    return sat_s((s64)(acc >> esize), esize);
+}
+
 /* SUQADD: signed accumulator `d` + UNSIGNED addend `a`, clamped to the signed
  * range. For esize==64 the addend must stay unsigned (casting it to s64 would
  * misread a large value as negative); since a>=0, only the upper bound can be
@@ -1261,6 +1273,13 @@ static void simd_indexed(CPU *c, u32 insn) {
                                  : ssat_sub(sx(d, 2 * esize), pr, 2 * esize);
             velem_set(&r, dsize, i, v);
         }
+    } else if (U && (opc == 0xd || opc == 0xf)) {                       /* SQRDMLAH/SQRDMLSH by elem (FEAT_RDM) */
+        unsigned n = (Q ? 16u : 8u) >> size;
+        for (unsigned i = 0; i < n; i++)
+            velem_set(&r, size, i,
+                      sqrdmlah_op(sx(velem_get(&vd, size, i), esize),
+                                  sx(velem_get(&vn, size, i), esize),
+                                  selt, esize, opc == 0xf) & emask);
     } else { fpsimd_undef(c, insn); return; }
     c->v[Rd] = r;
 }
@@ -2663,7 +2682,7 @@ static void simd_scalar_indexed(CPU *c, u32 insn) {
     unsigned U = BIT(29), size = BITS(23, 22), opc = BITS(15, 12);
     unsigned Rn = BITS(9, 5), Rd = BITS(4, 0), H = BIT(11), L = BIT(21), M = BIT(20);
     V128 r; r.d[0] = r.d[1] = 0;
-    if (opc == 0x1 || opc == 0x5 || opc == 0x9) {     /* FP scalar by element */
+    if (opc == 0x9 || (!U && (opc == 0x1 || opc == 0x5))) {  /* FP scalar by element (U picks FMULX at 0x9) */
         unsigned op = (opc == 0x1) ? FOP_MLA : (opc == 0x5) ? FOP_MLS : (U ? FOP_MULX : FOP_MUL);
         unsigned Rm = BITS(20, 16);
         if (size == 3)      vset_d(&r, 0, fop_d(op, vget_d(&c->v[Rn], 0), vget_d(&c->v[Rm], H), vget_d(&c->v[Rd], 0)));
@@ -2677,12 +2696,18 @@ static void simd_scalar_indexed(CPU *c, u32 insn) {
     else { fpsimd_undef(c, insn); return; }
     unsigned esize = 8u << size; u64 emask = (1ULL << esize) - 1;
     u64 a = velem_get(&c->v[Rn], size, 0) & emask, e = velem_get(&c->v[Rm], size, index) & emask;
-    if (opc == 0xc || opc == 0xd) {                   /* SQDMULH/SQRDMULH by element */
+    if (!U && (opc == 0xc || opc == 0xd)) {           /* SQDMULH/SQRDMULH by element */
         s64 p = sx(a, esize) * sx(e, esize);          /* overflow-safe: a*b then >>(esize-1) */
         if (opc == 0xd) p += (s64)1 << (esize - 2);
         velem_set(&r, size, 0, sat_s(p >> (esize - 1), esize) & emask); c->v[Rd] = r; return;
     }
-    if (opc == 0xb || opc == 0x3 || opc == 0x7) {     /* SQDMULL/SQDMLAL/SQDMLSL by element */
+    if (U && (opc == 0xd || opc == 0xf)) {            /* SQRDMLAH/SQRDMLSH by element (FEAT_RDM) */
+        velem_set(&r, size, 0,
+                  sqrdmlah_op(sx(velem_get(&c->v[Rd], size, 0), esize),
+                              sx(a, esize), sx(e, esize), esize, opc == 0xf) & emask);
+        c->v[Rd] = r; return;
+    }
+    if (!U && (opc == 0xb || opc == 0x3 || opc == 0x7)) {  /* SQDMULL/SQDMLAL/SQDMLSL by element */
         s64 pr = (s64)sqdmull_sat(sx(a, esize), sx(e, esize), 2 * esize);
         u64 d = velem_get(&c->v[Rd], size + 1, 0), v;
         v = (opc == 0xb) ? (u64)pr : (opc == 0x3) ? ssat_add(sx(d, 2*esize), pr, 2*esize)
@@ -2690,6 +2715,46 @@ static void simd_scalar_indexed(CPU *c, u32 insn) {
         velem_set(&r, size + 1, 0, v); c->v[Rd] = r; return;
     }
     fpsimd_undef(c, insn);
+}
+
+/* AdvSIMD three-same extra (bit21=0, bit15=1, bit10=1): the v8.1+ extension
+ * page — SQRDMLAH/SQRDMLSH (FEAT_RDM); SDOT/UDOT (FEAT_DotProd) and
+ * FCMLA/FCADD (FEAT_FCMA) share the page. opcode = bits[14:11]. */
+static void simd_three_same_extra(CPU *c, u32 insn) {
+    unsigned Q = BIT(30), U = BIT(29), size = BITS(23, 22), opc = BITS(14, 11);
+    unsigned Rm = BITS(20, 16), Rn = BITS(9, 5), Rd = BITS(4, 0);
+    if (U == 1 && opc <= 1) {                        /* SQRDMLAH (0) / SQRDMLSH (1) */
+        if (size != 1 && size != 2) { fpsimd_undef(c, insn); return; }
+        unsigned esize = 8u << size;
+        u64 emask = (1ULL << esize) - 1;
+        V128 vn = c->v[Rn], vm = c->v[Rm], vd = c->v[Rd], r; r.d[0] = r.d[1] = 0;
+        unsigned n = (Q ? 16u : 8u) >> size;
+        for (unsigned i = 0; i < n; i++)
+            velem_set(&r, size, i,
+                      sqrdmlah_op(sx(velem_get(&vd, size, i), esize),
+                                  sx(velem_get(&vn, size, i), esize),
+                                  sx(velem_get(&vm, size, i), esize),
+                                  esize, opc) & emask);
+        c->v[Rd] = r; return;
+    }
+    fpsimd_undef(c, insn);
+}
+
+/* AdvSIMD scalar three-same extra: single-lane SQRDMLAH/SQRDMLSH (FEAT_RDM),
+ * upper result bits zeroed like the other scalar handlers. */
+static void simd_scalar_three_same_extra(CPU *c, u32 insn) {
+    unsigned U = BIT(29), size = BITS(23, 22), opc = BITS(14, 11);
+    unsigned Rm = BITS(20, 16), Rn = BITS(9, 5), Rd = BITS(4, 0);
+    if (U != 1 || opc > 1 || (size != 1 && size != 2)) { fpsimd_undef(c, insn); return; }
+    unsigned esize = 8u << size;
+    u64 emask = (1ULL << esize) - 1;
+    V128 r; r.d[0] = r.d[1] = 0;
+    velem_set(&r, size, 0,
+              sqrdmlah_op(sx(velem_get(&c->v[Rd], size, 0), esize),
+                          sx(velem_get(&c->v[Rn], size, 0), esize),
+                          sx(velem_get(&c->v[Rm], size, 0), esize),
+                          esize, opc) & emask);
+    c->v[Rd] = r;
 }
 
 void exec_fpsimd(CPU *c, u32 insn) {
@@ -2746,6 +2811,7 @@ void exec_fpsimd(CPU *c, u32 insn) {
         if (BIT(21) == 1 && BIT(10) == 1)                          { simd_scalar_three_same(c, insn); return; }
         if (BIT(21) == 1 && BITS(11, 10) == 0)                     { simd_scalar_three_diff(c, insn); return; }
         if (BITS(21, 17) == 0x18 && BIT(11) == 1 && BIT(10) == 0)  { simd_scalar_pairwise(c, insn); return; }
+        if (BIT(21) == 0 && BIT(15) == 1 && BIT(10) == 1)          { simd_scalar_three_same_extra(c, insn); return; }
     }
     if (BITS(28, 24) == 0x1f && BIT(10) == 0) { simd_scalar_indexed(c, insn); return; }
     /* AdvSIMD three-different (whole group: ADDL/SUBL/ADDW/SUBW/ADDHN/SUBHN/
@@ -2775,6 +2841,10 @@ void exec_fpsimd(CPU *c, u32 insn) {
      * encoding page (bit22=1, bit21=0, bits[15:14]=0), distinct from the s/d form. */
     if (BITS(28, 24) == 0x0e && BIT(22) == 1 && BIT(21) == 0 && BITS(15, 14) == 0 && BIT(10) == 1) {
         simd_three_same_fp16(c, insn); return;
+    }
+    /* AdvSIMD three-same extra (v8.1+ RDM/DotProd/FCMA page). */
+    if (BIT(31) == 0 && BITS(28, 24) == 0x0e && BIT(21) == 0 && BIT(15) == 1 && BIT(10) == 1) {
+        simd_three_same_extra(c, insn); return;
     }
     /* AdvSIMD three-same (vector integer): ADD/SUB/CMP/MIN/MAX/MUL/logical. */
     if (BITS(28, 24) == 0x0e && BIT(21) == 1 && BIT(10) == 1) { simd_three_same(c, insn); return; }
