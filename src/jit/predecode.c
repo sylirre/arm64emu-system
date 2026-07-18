@@ -13,6 +13,8 @@
  * This file also carries pd_run/pd_step: the opt-in `-pd` direct-threaded
  * interpreter tier (a computed-goto executor over g_pdcache), kept in its own
  * TU so it never perturbs decode.c's codegen. */
+#include <stdlib.h>
+
 #include "predecode.h"
 #include "../mmu.h"
 
@@ -562,7 +564,7 @@ StepResult pd_step(CPU *c, u64 slice, u64 max_insn) {
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Woverride-init"
-    static const void *pd_tab[256] = {
+    static void *pd_tab[256] = {
         [0 ... 255] = &&L_GENERIC,
         [PD_NOP] = &&L_NOP,
         [PD_B] = &&L_B,
@@ -769,6 +771,20 @@ StepResult pd_step(CPU *c, u64 slice, u64 max_insn) {
         [PD_STPDPOST] = &&L_STPD,
     };
 #pragma GCC diagnostic pop
+    /* Debug bisection knob (the -pd analogue of AEJIT_PDMAX): AEPD_MAX=N keeps
+     * only PD ops <= N on their native handlers; everything above runs through
+     * exec_a64 (L_GENERIC). AEPD_MAX=0 is the pure-interpreter floor. Applied
+     * once to the dispatch table — the per-instruction path is untouched. */
+    static int pd_gate_done;
+    if (UNLIKELY(!pd_gate_done)) {
+        const char *s = getenv("AEPD_MAX");
+        if (s) {
+            int m = atoi(s);
+            for (int i = (m < 0 ? 0 : m + 1); i < 256; i++)
+                pd_tab[i] = &&L_GENERIC;
+        }
+        pd_gate_done = 1;
+    }
     PDEnt *e;
     u32 insn;
 

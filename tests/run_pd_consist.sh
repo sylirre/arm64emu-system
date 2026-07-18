@@ -7,12 +7,16 @@
 # state (registers, sp, pc, el, nzcv, daif, icount).
 #
 # Timer-driven IRQ *delivery points* can differ between the modes (the
-# interpreter polls devices every 1024 loop iterations, the JIT at block
+# interpreter polls devices every 1024 loop iterations, -pd at its slice
 # boundaries), so a guest that reads the timer very late in a long boot may
 # print different timestamps while both runs stay individually deterministic
-# (see docs/jit.md). The windows below are empirically interleave-identical;
-# a divergence here means a real translation bug — bisect with AEJIT_PDMAX
-# (see src/jit/frontend.c) and AEJIT_SLOWMEM/AEJIT_NOFUSE.
+# (see docs/pd.md). The windows below are empirically interleave-identical;
+# a divergence here means a bug in a native pd handler. Bisect: binary-search
+# -maxinsn for the first divergent state, then AEPD_MAX=N (dispatch only PD
+# ops <= N natively, the rest through exec_a64; 0 = pure interpreter) to
+# isolate the handler class. FP data-processing and system/exception ops are
+# always PD_GENERIC, so the suspects are the native integer, branch and
+# load/store handlers (see src/jit/predecode.c).
 #
 # Env: AE_BIOS, AE_KERNEL, AE_INITRD override the images;
 #      AE_POINTS overrides the checkpoint list.
