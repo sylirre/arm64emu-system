@@ -1429,17 +1429,28 @@ L_STP64:
         NEXT;
     }
 
-    /* ---- FP/SIMD register load/store (rd = Vt) ---- */
+    /* ---- FP/SIMD register load/store (rd = Vt) ----
+     * These execute natively (no exec_a64 fallback), so they must apply the
+     * CPACR_EL1.FPEN guard themselves; cur_insn_pc is already set by the
+     * dispatch preamble, and NEXT follows the redirected c->pc into the
+     * vector. FP *data-processing* needs no guard here: it is PD_GENERIC and
+     * exec_a64's dispatch guard covers it. */
+#define FP_GUARD() do { \
+        if (__builtin_expect(c->fp_trapped, 0)) { cpu_fp_trap(c); NEXT; } \
+    } while (0)
 L_LDRQ:
     {
+        FP_GUARD();
         V128 v;
         if (mem_read128(c, reg_xsp(c, e->rn) + e->imm, &v)) c->v[e->rd] = v;
         NEXT;
     }
 L_STRQ:
+    FP_GUARD();
     mem_write128(c, reg_xsp(c, e->rn) + e->imm, &c->v[e->rd]); NEXT;
 L_LDRV:
     {   /* rm = byte count 1/2/4/8; high half cleared */
+        FP_GUARD();
         u64 t;
         if (mem_read(c, reg_xsp(c, e->rn) + e->imm, e->rm, &t)) {
             c->v[e->rd].d[0] = t;
@@ -1448,9 +1459,11 @@ L_LDRV:
         NEXT;
     }
 L_STRV:
+    FP_GUARD();
     mem_write(c, reg_xsp(c, e->rn) + e->imm, e->rm, c->v[e->rd].d[0]); NEXT;
 L_LDRQPRE:
     {
+        FP_GUARD();
         u64 va = reg_xsp(c, e->rn) + e->imm;
         V128 v;
         if (!mem_read128(c, va, &v)) NEXT;
@@ -1459,6 +1472,7 @@ L_LDRQPRE:
     }
 L_LDRQPOST:
     {
+        FP_GUARD();
         u64 base = reg_xsp(c, e->rn);
         V128 v;
         if (!mem_read128(c, base, &v)) NEXT;
@@ -1467,6 +1481,7 @@ L_LDRQPOST:
     }
 L_STRQPRE:
     {
+        FP_GUARD();
         u64 va = reg_xsp(c, e->rn) + e->imm;
         if (!mem_write128(c, va, &c->v[e->rd])) NEXT;
         set_xsp(c, e->rn, va);
@@ -1474,6 +1489,7 @@ L_STRQPRE:
     }
 L_STRQPOST:
     {
+        FP_GUARD();
         u64 base = reg_xsp(c, e->rn);
         if (!mem_write128(c, base, &c->v[e->rd])) NEXT;
         set_xsp(c, e->rn, base + e->imm);
@@ -1484,6 +1500,7 @@ L_STRQPOST:
      * second faults — matches decode.c's vreg_load ordering) ---- */
 L_LDPQ:
     {
+        FP_GUARD();
         bool post = (e->op == PD_LDPQPOST);
         bool wb = post || e->op == PD_LDPQPRE;
         u64 base = reg_xsp(c, e->rn);
@@ -1498,6 +1515,7 @@ L_LDPQ:
     }
 L_STPQ:
     {
+        FP_GUARD();
         bool post = (e->op == PD_STPQPOST);
         bool wb = post || e->op == PD_STPQPRE;
         u64 base = reg_xsp(c, e->rn);
@@ -1509,6 +1527,7 @@ L_STPQ:
     }
 L_LDPD:
     {
+        FP_GUARD();
         bool post = (e->op == PD_LDPDPOST);
         bool wb = post || e->op == PD_LDPDPRE;
         u64 base = reg_xsp(c, e->rn);
@@ -1523,6 +1542,7 @@ L_LDPD:
     }
 L_STPD:
     {
+        FP_GUARD();
         bool post = (e->op == PD_STPDPOST);
         bool wb = post || e->op == PD_STPDPRE;
         u64 base = reg_xsp(c, e->rn);
@@ -1533,7 +1553,7 @@ L_STPD:
         NEXT;
     }
 
-#undef NEXT
+#undef FP_GUARD
 #undef NEXT
 }
 /* =============== end -pd interpreter tier =============== */

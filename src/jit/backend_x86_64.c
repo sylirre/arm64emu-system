@@ -3539,9 +3539,9 @@ static int emit_op(BE *be, const IRBlock *ir, int i) {
             e8(e, 0x84 | ((RCX & 7) << 3));       /* mod10 rm=100 (SIB) */
             e8(e, (u8)((0 << 6) | ((RCX & 7) << 3) | (R15 & 7)));
             e32(e, (u32)offsetof(JitEnv, jcache));
-            /* rax = key = (pc << 2) | env->ctx (pc is already stored to
-             * c->pc above, so rax is free to clobber) */
-            shift_ri(e, 1, 4, RAX, 2);
+            /* rax = key = (pc << 3) | env->ctx (pc is already stored to
+             * c->pc above, so rax is free to clobber; must match jit_tag) */
+            shift_ri(e, 1, 4, RAX, 3);
             op_rm(e, 1, 0x0B, RAX, R15, (s32)offsetof(JitEnv, ctx));
             op_rm(e, 1, 0x3B, RAX, RCX, 0);       /* cmp rax, [rcx] — needs
                                                      base rcx: rm=1 ok */

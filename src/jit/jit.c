@@ -654,19 +654,23 @@ void jit_reset(void) {
 
 /* ---- dispatch ---- */
 
-/* Block context: EL0 flag, MMU enable, and the active SP bank (sp_el[] is
+/* Block context: EL0 flag, MMU enable, the active SP bank (sp_el[] is
  * banked by SPSel/EL — the backends bake the bank's offset into generated
- * code, donor's user-mode assumption of sp_el[0] does not hold here). All
- * three can only change via CALL1-ended blocks (exceptions, ERET, MSR
- * SPSel), so they are per-block constants. */
+ * code, donor's user-mode assumption of sp_el[0] does not hold here), and
+ * the CPACR.FPEN trap state (bit 4: the frontend compiles FP/SIMD as a
+ * trapping CALL1 under it, see fe_fptrap). All of these can only change via
+ * CALL1-ended blocks (exceptions, ERET, MSR SPSel/CPACR), so they are
+ * per-block constants. */
 static inline u64 jit_ctx(const CPU *c) {
     unsigned spx = c->sp_sel ? c->el : 0;
     return (u64)((c->el == 0 ? 1u : 0u) | ((c->sctlr[1] & 1) ? 2u : 0u) |
-                 ((u64)spx << 2));
+                 ((u64)spx << 2) | (c->fp_trapped ? 16u : 0u));
 }
 
 static inline u64 jit_tag(u64 pc, u64 ctx) {
-    return (pc << 2) | ctx;     /* pc bits 1:0 are zero; 4 ctx bits fit */
+    /* pc bits 1:0 are zero -> 5 ctx bits fit under pc << 3; the 3 dropped
+     * pc top bits are redundant sign-extension for canonical VAs. */
+    return (pc << 3) | ctx;
 }
 
 /* Fetch-cache-based resolution of pc's code page. Returns 1 with host/pa
@@ -780,7 +784,7 @@ StepResult jit_step(CPU *c, u64 slice, u64 max_insn) {
         }
 
         u64 ctx = jit_ctx(c);
-        env->ctx = ctx;                 /* jcache probes OR this into pc<<2 */
+        env->ctx = ctx;                 /* jcache probes OR this into pc<<3 */
         /* Inline D-TLB probes OR these low tag bits into the VA page. Gen,
          * EL and MMU state can only change through block-exiting paths, so
          * refreshing here keeps every probe's compare current. */
@@ -808,7 +812,7 @@ StepResult jit_step(CPU *c, u64 slice, u64 max_insn) {
          * in between; skip if prev was invalidated meanwhile. */
         if (prev && prev->exit_pc[prev_slot] == b->pc &&
             !prev->patched[prev_slot] &&
-            ((prev->tag ^ b->tag) & 0xf) == 0 &&
+            ((prev->tag ^ b->tag) & 0x1f) == 0 &&    /* all 5 ctx bits */
             ((prev->pc ^ b->pc) & ~0xfffULL) == 0 &&
             jit_lookup(env, prev->tag, prev->host_page) == prev &&
             env->nedges < 2 * JIT_MAX_BLOCKS) {
@@ -827,7 +831,7 @@ StepResult jit_step(CPU *c, u64 slice, u64 max_insn) {
          * host page) for this dispatch, so a generated JMPIND probe may
          * take the same tag straight to b->code until the next TLBI/
          * flush/page-drop purge. The entry key equals the block tag —
-         * pc<<2 | ctx — never zero-extended pc alone (a `br` to VA 0
+         * pc<<3 | ctx — never zero-extended pc alone (a `br` to VA 0
          * must not hit the empty pattern; see jcache_purge). */
         u32 jci = (u32)(pc >> 2) & (JIT_JC_SIZE - 1);
         env->jcache[jci].tag = tag;

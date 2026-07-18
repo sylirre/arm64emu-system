@@ -142,6 +142,20 @@ static inline void set_x_sz(CPU *c, unsigned n, bool is64, u64 v) {
 u32 cpu_pack_spsr(CPU *c);
 void cpu_unpack_spsr(CPU *c, u32 spsr);
 
+/* Recompute the cached CPACR_EL1.FPEN trap predicate. Depends only on
+ * (cpacr, el), so it is refreshed at the four points either can change:
+ * CPACR MSR, exception entry, ERET (inside cpu_unpack_spsr), and reset.
+ * FPEN: 0b11 no trap; 0b01 traps EL0 only; 0b00/0b10 trap EL0 and EL1.
+ * EL2+ is outside CPACR's reach (CPTR_EL2/3 are not modeled). */
+static inline void cpu_refresh_fp_trap(CPU *c) {
+    unsigned fpen = (unsigned)(c->cpacr_el1 >> 20) & 3;
+    c->fp_trapped = (c->el == 0) ? (fpen != 3)
+                  : (c->el == 1) ? (fpen == 0 || fpen == 2) : false;
+}
+
+/* Raise the EC 0x07 FP/SIMD-access trap (A64 ISS: CV=1, COND=0b1110). */
+void cpu_fp_trap(CPU *c);
+
 /* ---- Core API ---- */
 void cpu_reset(CPU *c, u64 entry, unsigned reset_el);
 StepResult cpu_step(CPU *c);                 /* fetch/decode/execute one instruction */

@@ -99,8 +99,13 @@ static void do_mrs(CPU *c, unsigned key, unsigned Rt) {
         case KEY(3,0,4,2,0): v = c->sp_sel; break;           /* SPSel */
         case KEY(3,3,4,2,0): v = c->nzcv & 0xf0000000; break;/* NZCV */
         case KEY(3,3,4,2,1): v = c->daif & (PS_D|PS_A|PS_I|PS_F); break; /* DAIF */
-        case KEY(3,3,4,4,0): v = c->fpcr; break;             /* FPCR */
-        case KEY(3,3,4,4,1): v = c->fpsr; break;             /* FPSR */
+        /* FPCR/FPSR accesses trap under CPACR_EL1.FPEN too (EC 0x07). */
+        case KEY(3,3,4,4,0):
+            if (c->fp_trapped) { cpu_fp_trap(c); return; }
+            v = c->fpcr; break;                              /* FPCR */
+        case KEY(3,3,4,4,1):
+            if (c->fp_trapped) { cpu_fp_trap(c); return; }
+            v = c->fpsr; break;                              /* FPSR */
         case KEY(3,0,4,0,0): v = c->spsr[1]; break;          /* SPSR_EL1 */
         case KEY(3,0,4,0,1): v = c->elr[1]; break;           /* ELR_EL1 */
         case KEY(3,0,4,1,0): v = c->sp_el[0]; break;         /* SP_EL0 */
@@ -139,7 +144,10 @@ static void do_msr(CPU *c, unsigned key, unsigned Rt) {
     u64 v = reg_x(c, Rt);
     switch (key) {
         case KEY(3,0,1,0,0): c->sctlr[1] = v; tlb_flush_all(); break;  /* SCTLR_EL1 */
-        case KEY(3,0,1,0,2): c->cpacr_el1 = v; break;                  /* CPACR_EL1 */
+        case KEY(3,0,1,0,2):                                           /* CPACR_EL1 */
+            c->cpacr_el1 = v;
+            cpu_refresh_fp_trap(c);
+            break;
         case KEY(3,0,2,0,0): c->ttbr0[1] = v; tlb_flush_all(); break;  /* TTBR0_EL1 */
         case KEY(3,0,2,0,1): c->ttbr1[1] = v; tlb_flush_all(); break;  /* TTBR1_EL1 */
         case KEY(3,0,2,0,2): c->tcr[1] = v; tlb_flush_all(); break;    /* TCR_EL1 */
@@ -158,8 +166,12 @@ static void do_msr(CPU *c, unsigned key, unsigned Rt) {
         case KEY(3,0,4,2,0): c->sp_sel = v & 1; break;                 /* SPSel */
         case KEY(3,3,4,2,0): c->nzcv = (u32)(v & 0xf0000000); break;   /* NZCV */
         case KEY(3,3,4,2,1): c->daif = (u32)(v & (PS_D|PS_A|PS_I|PS_F)); break; /* DAIF */
-        case KEY(3,3,4,4,0): c->fpcr = (u32)v; break;                  /* FPCR */
-        case KEY(3,3,4,4,1): c->fpsr = (u32)v; break;                  /* FPSR */
+        case KEY(3,3,4,4,0):                                           /* FPCR */
+            if (c->fp_trapped) { cpu_fp_trap(c); return; }
+            c->fpcr = (u32)v; break;
+        case KEY(3,3,4,4,1):                                           /* FPSR */
+            if (c->fp_trapped) { cpu_fp_trap(c); return; }
+            c->fpsr = (u32)v; break;
         case KEY(3,0,4,0,0): c->spsr[1] = v; break;                    /* SPSR_EL1 */
         case KEY(3,0,4,0,1): c->elr[1] = v; break;                     /* ELR_EL1 */
         case KEY(3,0,4,1,0): c->sp_el[0] = v; break;                   /* SP_EL0 */
@@ -204,6 +216,11 @@ void sysreg_exec(CPU *c, u32 insn) {
 
 void sysreg_init(CPU *c) {
     c->sctlr[1] = 0x00C50838;   /* RES1 bits set, MMU/caches off */
-    c->cpacr_el1 = 0;
+    /* CPACR_EL1 resets architecturally UNKNOWN; reset FPEN=0b11 (no trap) so
+     * flat-loaded images and firmware that touch SIMD before programming
+     * CPACR keep working — enforcement engages only when a guest explicitly
+     * writes a trapping FPEN. */
+    c->cpacr_el1 = 0x300000;
+    cpu_refresh_fp_trap(c);
     c->mdscr_el1 = 0;
 }

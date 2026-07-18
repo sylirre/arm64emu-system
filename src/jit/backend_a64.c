@@ -1870,10 +1870,10 @@ static int emit_op(BE *be, const IRBlock *ir, int i) {
             ei(e, 0x91000000u |
                   (((u32)offsetof(JitEnv, jcache) & 0xfff) << 10) |
                   (16u << 5) | 16);
-            /* x17 = key = (pc << 2) | env->ctx */
+            /* x17 = key = (pc << 3) | env->ctx (must match jit_tag) */
             ei(e, enc_ldr(3, 17, 27, (unsigned)offsetof(JitEnv, ctx)));
-            /* orr x17, x17, ha, lsl #2 (shifted-reg) */
-            ei(e, 0xAA000000u | ((u32)ha << 16) | (2u << 10) | (17u << 5) | 17);
+            /* orr x17, x17, ha, lsl #3 (shifted-reg) */
+            ei(e, 0xAA000000u | ((u32)ha << 16) | (3u << 10) | (17u << 5) | 17);
             /* ldr ha, [x16] — entry.tag; ha is dead now (pc stored above) */
             ei(e, enc_ldr(3, (unsigned)ha, 16, 0));
             /* cmp x17, ha : SUBS xzr */

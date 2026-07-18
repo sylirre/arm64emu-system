@@ -21,6 +21,18 @@ static void undefined(CPU *c, u32 insn) {
     cpu_raise_sync(c, esr_make(EC_UNKNOWN, 0), 0);
 }
 
+/* CPACR_EL1.FPEN guard, one call per FP/SIMD dispatch point (data-processing
+ * and every vector load/store family). Raises the EC 0x07 access trap and
+ * returns false when the current EL's FP access is trapped. It runs before
+ * the fine-grained decode, so an unallocated FP-space encoding traps 0x07
+ * rather than UNDEF while trapping is active — unobservable for real guests
+ * (trapping is off out of reset). */
+static inline bool fp_access_ok(CPU *c) {
+    if (__builtin_expect(!c->fp_trapped, 1)) return true;
+    cpu_fp_trap(c);
+    return false;
+}
+
 /* ---------- arithmetic helpers ---------- */
 
 static u64 add_with_carry(u64 x, u64 y, int cin, bool is64, u32 *flags) {
@@ -570,6 +582,7 @@ static void ldst_register(CPU *c, u32 insn) {
         /* opc<1> selects the 128-bit Q form, which is defined only for size==0;
          * size!=0 with opc&2 is unallocated. */
         if ((opc & 2) && size != 0) { undefined(c, insn); return; }
+        if (!fp_access_ok(c)) return;
         bytes = (opc & 2) ? 16 : (1u << size);
         scale = (opc & 2) ? 4 : size;
     } else {
@@ -653,6 +666,7 @@ static void ldst_pair(CPU *c, u32 insn) {
         default: undefined(c, insn); return;
     }
     if (V) {
+        if (!fp_access_ok(c)) return;
         bool ok = L ? (vreg_load(c, Rt, addr, esz) && vreg_load(c, Rt2, addr + esz, esz))
                     : (vreg_store(c, Rt, addr, esz) && vreg_store(c, Rt2, addr + esz, esz));
         if (!ok) return;   /* faulted: skip writeback (instruction re-executes) */
@@ -678,6 +692,7 @@ static void ldst_literal(CPU *c, u32 insn) {
     u64 va = c->cur_insn_pc + off;
     if (V) {                                     /* SIMD&FP: LDR St/Dt/Qt (literal) */
         if (opc == 3) { undefined(c, insn); return; }   /* UNALLOCATED */
+        if (!fp_access_ok(c)) return;
         vreg_load(c, Rt, va, 4u << opc);         /* opc 0/1/2 -> 4/8/16 bytes */
         return;
     }
@@ -749,6 +764,7 @@ static void ldst_exclusive(CPU *c, u32 insn) {
  * and LD2/3/4/ST2/3/4 (de-interleaved). Used pervasively for memcpy/memset and
  * NEON block I/O by both EDK2 and Linux. Supports the post-indexed form. */
 static void ldst_vector_multi(CPU *c, u32 insn) {
+    if (!fp_access_ok(c)) return;
     unsigned Q = BIT(30), post = BIT(23), L = BIT(22), Rm = BITS(20, 16);
     unsigned opcode = BITS(15, 12), size = BITS(11, 10), Rn = BITS(9, 5), Rt = BITS(4, 0);
     unsigned nregs, sel;     /* sel = interleave factor (1 = contiguous LD1/ST1) */
@@ -802,6 +818,7 @@ static void ldst_vector_multi(CPU *c, u32 insn) {
  * memset/strlen-class routines and struct-of-arrays NEON code. Post-indexed
  * form supported. */
 static void ldst_vector_single(CPU *c, u32 insn) {
+    if (!fp_access_ok(c)) return;
     unsigned Q = BIT(30), post = BIT(23), L = BIT(22), R = BIT(21);
     unsigned Rm = BITS(20, 16), opcode = BITS(15, 13), S = BIT(12);
     unsigned size = BITS(11, 10), Rn = BITS(9, 5), Rt = BITS(4, 0);
@@ -978,6 +995,7 @@ void exec_a64(CPU *c, u32 insn) {
         case 0x4: case 0x6: case 0xc: case 0xe: loads_stores(c, insn); break; /* x1x0 */
         case 0x5: case 0xd: dp_register(c, insn); break;      /* x101 */
         case 0x7: case 0xf:                                   /* x111 FP/SIMD */
+            if (!fp_access_ok(c)) break;
             if (exec_fpsimd) { exec_fpsimd(c, insn); break; }
             if (g_dbg) fprintf(stderr, "[fpsimd] unimpl 0x%08x at pc=0x%llx\n",
                                insn, (unsigned long long)c->cur_insn_pc);

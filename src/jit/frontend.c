@@ -936,10 +936,39 @@ static int fe_bitfield(IRBlock *ir, u32 insn, u64 pc) {
 
 /* Translate one classified instruction. Emits IR; returns FE_END when the
  * block must stop after it (all terminal ops emitted). */
+/* CPACR_EL1.FPEN trap state of the block being translated (set by
+ * jit_fe_block from c->fp_trapped; per-block constant — it is bit 4 of the
+ * block-lookup ctx in jit.c, so a block only ever runs in the trap state it
+ * was compiled under). Almost always false: Linux/firmware program FPEN=0b11
+ * once, and generated code is then identical to the ungated build. */
+static bool g_fe_fptrap;
+
+/* True if the instruction is FP/SIMD for CPACR.FPEN purposes: a specialized
+ * vector load/store PD id, or a GENERIC word in the FP/SIMD data-processing
+ * groups (0x7/0xf) or a V=1 load/store family ((grp&5)==4 covers 4/6/c/e —
+ * decode.c's loads_stores groups, including the AdvSIMD structure forms). */
+static bool fe_fp_insn(u8 op, u32 insn) {
+    if (op >= PD_LDRQ && op < PD_NOPS_) return true;
+    if (op != PD_GENERIC) return false;
+    unsigned grp = (insn >> 25) & 0xf;
+    if (grp == 0x7 || grp == 0xf) return true;
+    return (grp & 5) == 4 && ((insn >> 26) & 1);
+}
+
 static int fe_insn(IRBlock *ir, const PDEnt *e, u64 pc) {
     const u32 insn = e->insn;
     const u64 next = pc + 4;
     u8 w = 0;
+
+    if (UNLIKELY(g_fe_fptrap) && fe_fp_insn(e->op, insn)) {
+        /* Every FP/SIMD insn unconditionally traps in this block ctx:
+         * compile it as the interpreter call (exec_a64's fp_access_ok
+         * raises EC 0x07 -> the helper reports a control transfer and the
+         * block side-exits at the vector) and end the block. */
+        put_call1(ir, pc, insn);
+        ir_put(ir, IRO_JMP, 0, 0, 0, 0, 0, next, 0);
+        return FE_END;
+    }
 
     switch (e->op) {
         case PD_NOP:
@@ -1884,6 +1913,7 @@ u32 jit_fe_block(CPU *c, u64 pc, IRBlock *ir, u32 max_insns) {
     ir->n = 0;
     ir->ninsns = 0;
     ir->ctx_spx = (u8)(c->sp_sel ? c->el : 0);
+    g_fe_fptrap = c->fp_trapped;    /* ctx bit 4: see fe_insn's FP gate */
     u32 guest_n = 0;
     u64 p = pc;
     if (max_insns == 0 || max_insns > JIT_MAX_BLOCK_INSNS)

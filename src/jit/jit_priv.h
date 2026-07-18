@@ -100,8 +100,9 @@ typedef struct JitEnv {
     u32 slowmem;                /* every mem op takes the helper path; wired
                                  * on until Stage 2b adapts the inline probe
                                  * (then AEJIT_SLOWMEM=1 forces, bisection) */
-    u64 ctx;                    /* current 4-bit block ctx (EL0|MMU<<1|spx<<2);
-                                 * jcache probes OR it into pc<<2 */
+    u64 ctx;                    /* current 5-bit block ctx (EL0 | MMU<<1 |
+                                 * spx<<2 | fp_trapped<<4); jcache probes OR
+                                 * it into pc<<3 */
     u32 jc_gen;                 /* g_tlb_gen the jcache was last purged at */
     u64 dtlb_ctxgen;            /* low 12 bits of the current dtlb_tag():
                                  * (g_tlb_gen & 0x3ff) << 2 | MMU<<1 | EL0.
@@ -117,7 +118,7 @@ typedef struct JitEnv {
      * BR/BLR/RET: guest pc -> block entry. Purged on any invalidation. */
 #define JIT_JC_BITS 12
 #define JIT_JC_SIZE (1u << JIT_JC_BITS)
-    /* Indirect-branch inline cache: tag = block tag (pc<<2 | ctx); the
+    /* Indirect-branch inline cache: tag = block tag (pc<<3 | ctx); the
      * probes in generated code OR env->ctx into the target pc. Filled by
      * the dispatcher after a verified lookup; purged (to ALL-ONES, the
      * unhittable empty pattern — see jcache_purge) on flush, page drop and

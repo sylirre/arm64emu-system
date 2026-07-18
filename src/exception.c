@@ -2,6 +2,7 @@
 /* Copyright 2026 Sylirre */
 /* Exception entry/return. All exceptions are routed to EL1 (we model EL0/EL1). */
 #include "cpu.h"
+#include "esr.h"
 #include <stdio.h>
 
 u32 cpu_pack_spsr(CPU *c) {
@@ -18,6 +19,7 @@ void cpu_unpack_spsr(CPU *c, u32 spsr) {
     unsigned m = spsr & 0xf;
     c->el = (m >> 2) & 3;
     c->sp_sel = m & 1u;
+    cpu_refresh_fp_trap(c);        /* ERET may drop to an FPEN-trapped EL */
 }
 
 void exception_take(CPU *c, ExcKind kind, u64 esr, u64 far, u64 ret_addr) {
@@ -42,6 +44,7 @@ void exception_take(CPU *c, ExcKind kind, u64 esr, u64 far, u64 ret_addr) {
 
     c->el = tel;
     c->sp_sel = 1;
+    cpu_refresh_fp_trap(c);                 /* FPEN=0b01 stops trapping at EL1 */
     c->daif |= PS_D | PS_A | PS_I | PS_F;   /* mask on entry */
     c->pc = (c->vbar[tel] & ~0x7ffULL) + off;
     c->halted = false;
@@ -72,4 +75,12 @@ void cpu_raise_sync(CPU *c, u64 esr, u64 far) {
         ring_dump();
     }
     exception_take(c, EXC_SYNC, esr, far, c->cur_insn_pc);
+}
+
+/* CPACR_EL1.FPEN trap: EC 0x07 with the A64 ISS (CV=1, COND=0b1110 — the
+ * encoding QEMU uses for trapped-from-AArch64 FP accesses). Shared by the
+ * interpreter dispatch guards, the sysreg FPCR/FPSR guards, and the -pd
+ * tier's specialized vector load/store handlers. */
+void cpu_fp_trap(CPU *c) {
+    cpu_raise_sync(c, esr_make(EC_FP_SIMD_TRAP, 0x01E00000), 0);
 }
