@@ -575,6 +575,25 @@ static bool sp_align_ok(CPU *c, unsigned Rn) {
     return false;
 }
 
+/* FEAT_LRCPC2: LDAPUR/STLUR, load-acquire RCpc / store-release with an
+ * unscaled 9-bit immediate. The acquire/release ordering is a no-op in this
+ * in-order single-CPU model (same as LDAR/LDAPR); the access is an ordinary
+ * unscaled load/store. No writeback, and no SIMD&FP forms at LRCPC=2. */
+static void ldst_rcpc_unscaled(CPU *c, u32 insn) {
+    unsigned size = BITS(31, 30), opc = BITS(23, 22);
+    unsigned Rn = BITS(9, 5), Rt = BITS(4, 0);
+    /* The opc==2/size==3 slot is unallocated here (no PRFM in this space) and
+     * must not reach do_load, which would treat it as a prefetch no-op. */
+    if ((opc == 2 && size == 3) || (opc == 3 && size >= 2)) {
+        undefined(c, insn);
+        return;
+    }
+    if (!sp_align_ok(c, Rn)) return;
+    u64 va = reg_xsp(c, Rn) + (u64)(s64)sign_extend(BITS(20, 12), 9);
+    if (opc == 0) mem_write(c, va, 1u << size, reg_x(c, Rt));   /* STLUR */
+    else do_load(c, Rt, va, size, opc);                         /* LDAPUR* */
+}
+
 static void ldst_register(CPU *c, u32 insn) {
     unsigned size = BITS(31, 30), opc = BITS(23, 22);
     unsigned Rn = BITS(9, 5), Rt = BITS(4, 0);
@@ -883,6 +902,10 @@ static void loads_stores(CPU *c, u32 insn) {
         ldst_vector_single(c, insn); return;   /* AdvSIMD load/store single structure */
     }
     if (b2927 == 0x3 && BITS(25, 24) == 0) { ldst_literal(c, insn); return; }
+    if (b2927 == 0x3 && BIT(26) == 0 && BITS(25, 24) == 1 && BIT(21) == 0 &&
+        BITS(11, 10) == 0) {
+        ldst_rcpc_unscaled(c, insn); return;   /* FEAT_LRCPC2 LDAPUR/STLUR */
+    }
     if (b2927 == 0x5) { ldst_pair(c, insn); return; }
     if (b2927 == 0x7) { ldst_register(c, insn); return; }
     undefined(c, insn);

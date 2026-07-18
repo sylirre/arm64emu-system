@@ -89,6 +89,26 @@ _start:
     movz    x11, #11
     cbnz    x21, fail
 
+    movz    x21, #0xffff
+    .inst   0xd9800020                  /* LDAPUR-space opc=2 size=3 (no PRFM slot) */
+    movz    x11, #12
+    cbnz    x21, fail
+
+    movz    x21, #0xffff
+    .inst   0x99c00020                  /* LDAPUR-space opc=3 size=2 */
+    movz    x11, #13
+    cbnz    x21, fail
+
+    movz    x21, #0xffff
+    .inst   0x19400420                  /* LDAPUR-space bits[11:10]=01 */
+    movz    x11, #14
+    cbnz    x21, fail
+
+    movz    x21, #0xffff
+    .inst   0x19600020                  /* LDAPUR-space bit21=1 */
+    movz    x11, #15
+    cbnz    x21, fail
+
     /* ================= valid neighbours: must NOT trap (x21 stays 0xffff) === */
 
     movz    x21, #0xffff
@@ -107,6 +127,8 @@ _start:
     pmul    v0.16b, v1.16b, v2.16b      /* PMUL .16b: valid */
     ldr     q0, [x5]                    /* vector LDR Q-form (size=0): valid */
     ldr     d0, [x5]                    /* vector LDR D-form: valid */
+    .inst   0x990000a0                  /* stlur w0,[x5]: valid (LRCPC2) */
+    .inst   0xd94000a0                  /* ldapur x0,[x5]: valid (LRCPC2) */
     movz    x11, #100
     movz    x10, #0xffff
     cmp     x21, x10                    /* none of the above may have trapped */
