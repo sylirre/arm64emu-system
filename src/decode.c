@@ -302,15 +302,19 @@ static void dp_register(CPU *c, u32 insn) {
     }
     if (op24 == 0x1a) {
         unsigned op21 = BITS(28, 21);
-        if (op21 == 0xd0) {                        /* add/sub with carry */
-            bool op = BIT(30), S = BIT(29);
-            u32 fl;
-            int cin = (c->nzcv & PS_C) ? 1 : 0;
-            u64 m = reg_x(c, Rm), n = reg_x(c, Rn);
-            u64 r = op ? add_with_carry(n, ~m, cin, sf, &fl)
-                       : add_with_carry(n, m, cin, sf, &fl);
-            if (S) c->nzcv = fl;
-            set_x_sz(c, Rd, sf, r);
+        if (op21 == 0xd0) {
+            if (BITS(15, 10) == 0) {               /* add/sub with carry */
+                bool op = BIT(30), S = BIT(29);
+                u32 fl;
+                int cin = (c->nzcv & PS_C) ? 1 : 0;
+                u64 m = reg_x(c, Rm), n = reg_x(c, Rn);
+                u64 r = op ? add_with_carry(n, ~m, cin, sf, &fl)
+                           : add_with_carry(n, m, cin, sf, &fl);
+                if (S) c->nzcv = fl;
+                set_x_sz(c, Rd, sf, r);
+                return;
+            }
+            undefined(c, insn);
             return;
         }
         if (op21 == 0xd2) {                        /* conditional compare */

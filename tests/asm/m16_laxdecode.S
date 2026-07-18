@@ -7,7 +7,8 @@
  * for TODO_BUGS §4: 3-source multiplies with sf=0, add/sub extended-register
  * shift>4, add/sub shifted-register ROR and 32-bit imm6>=32, logical shifted
  * 32-bit imm6>=32, AdvSIMD copy reserved imm5/imm4/Q (imm5==0, SMOV/UMOV bad
- * size/Q), PMUL with size!=0, and the vector LDR Q-form with size!=0.
+ * size/Q), PMUL with size!=0, the vector LDR Q-form with size!=0, and
+ * add/sub-with-carry with bits[15:10]!=0 (the RMIF/SETF neighbourhood).
  *
  * Each unallocated .inst is preceded by a sentinel in x21 (0xffff); the sync
  * handler overwrites x21 with the ESR EC, so after the trap x21 must read 0
@@ -83,10 +84,17 @@ _start:
     movz    x11, #10
     cbnz    x21, fail
 
+    movz    x21, #0xffff
+    .inst   0x1a028020                  /* ADC w0,w1,w2 with bits[15:10]!=0 */
+    movz    x11, #11
+    cbnz    x21, fail
+
     /* ================= valid neighbours: must NOT trap (x21 stays 0xffff) === */
 
     movz    x21, #0xffff
     smulh   x0, x1, x2                  /* sf=1: valid */
+    adcs    x0, x1, x2                  /* add/sub w/ carry bits[15:10]==0 */
+    sbc     w0, w1, w2
     add     x0, x1, x2, uxtx #4         /* extended shift==4: valid (max) */
     add     w0, w1, w2, lsl #31         /* shifted 32-bit imm6==31: valid (max) */
     and     w0, w1, w2, lsl #31         /* logical shifted 32-bit imm6==31 */
