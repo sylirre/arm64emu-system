@@ -462,6 +462,13 @@ void pd_fill(PDEnt *e, u32 insn) {
         case 0x5: case 0xd: fill_dp_reg(e, insn); break;
         default: break;
     }
+    /* SP-alignment faults (SCTLR_EL1.SA/SA0) are raised only on the exec_a64
+     * path (decode.c sp_align_ok). Route SP-based memory ops through it so the
+     * -pd tier stays byte-identical to the interpreter when a misaligned SP is
+     * used as a base. Literal loads are PC-relative, never SP, so keep those. */
+    if (e->rn == 31 && e->op >= PD_LDR64U && e->op <= PD_STPDPOST &&
+        e->op != PD_LDRLIT64 && e->op != PD_LDRLIT32 && e->op != PD_LDRLITV)
+        e->op = PD_GENERIC;
 }
 
 /* ================= -pd interpreter tier ================= */

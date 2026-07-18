@@ -89,6 +89,7 @@ typedef struct JitEnv {
     void *helper_st;            /* u32 (*)(CPU*, u64 va, u64 val, u64 pc, u32) */
     void *helper_ldv;           /* u32 (*)(CPU*, u64 va, u64 pc, u32 desc) */
     void *helper_stv;           /* u32 (*)(CPU*, u64 va, u64 pc, u32 desc) */
+    void *helper_spchk;         /* u32 (*)(CPU*, u64 pc): SP-align fault or 0 */
     u64 tmp_spill[4];           /* spill homes for IR temps 0-2 (generated
                                  * code); slot 3 saves a fused memory run's
                                  * base VA across its bail-path helper calls */
@@ -210,6 +211,7 @@ u32 jit_ld(CPU *c, u64 va, u64 pc, u32 desc);
 u32 jit_st(CPU *c, u64 va, u64 val, u64 pc, u32 desc);
 u32 jit_ldv(CPU *c, u64 va, u64 pc, u32 desc);   /* into c->v[rt] */
 u32 jit_stv(CPU *c, u64 va, u64 pc, u32 desc);   /* from c->v[rt] */
+u32 jit_sp_check(CPU *c, u64 pc);                /* SP-align fault (1) or proceed (0) */
 
 /* Memory-access descriptor bit layout (shared by frontend, backends, jit.c). */
 #define MDESC_RT(d)    ((d) & 31)

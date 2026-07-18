@@ -536,6 +536,22 @@ static void ldst_casp(CPU *c, u32 insn) {
 }
 /* ============ end LSE atomics ============ */
 
+/* CheckSPAlignment (SCTLR_EL1.SA/SA0): when SP is the base register of a memory
+ * access and the check is enabled for the current EL, SP must be 16-byte
+ * aligned, else the access takes an SP-alignment fault (EC 0x26). Returns true
+ * if the access may proceed; false after raising the fault. Called before the
+ * access and any base writeback, matching the architecture's per-instruction
+ * check. */
+static bool sp_align_ok(CPU *c, unsigned Rn) {
+    if (Rn != 31) return true;                     /* base is not SP */
+    u64 sp = reg_xsp(c, 31);
+    if ((sp & 15) == 0) return true;               /* 16-byte aligned */
+    unsigned bit = (c->el == 0) ? 4 : 3;           /* SCTLR_EL1.SA0 : .SA */
+    if (!((c->sctlr[1] >> bit) & 1)) return true;  /* check disabled for this EL */
+    cpu_raise_sync(c, esr_make(EC_SP_ALIGN, 0), 0);
+    return false;
+}
+
 static void ldst_register(CPU *c, u32 insn) {
     unsigned size = BITS(31, 30), opc = BITS(23, 22);
     unsigned Rn = BITS(9, 5), Rt = BITS(4, 0);
@@ -555,6 +571,7 @@ static void ldst_register(CPU *c, u32 insn) {
 
     /* compute effective address and optional writeback */
     u64 va, base = reg_xsp(c, Rn);
+    if (!sp_align_ok(c, Rn)) return;
     int wb = 0;          /* 0 none, 1 post, 2 pre */
     if (BIT(24)) {                              /* unsigned immediate offset */
         va = base + ((u64)BITS(21, 10) << scale);
@@ -607,6 +624,7 @@ static void ldst_pair(CPU *c, u32 insn) {
     s64 offset = imm7 << scale;
 
     u64 base = reg_xsp(c, Rn), addr;
+    if (!sp_align_ok(c, Rn)) return;
     bool wb = false; u64 wbval = 0;
     switch (mode) {
         case 0: addr = base + offset; break;                            /* STNP/LDNP (non-temporal) */
@@ -659,6 +677,7 @@ static void ldst_exclusive(CPU *c, u32 insn) {
     unsigned Rs = BITS(20, 16), Rt2 = BITS(14, 10), Rn = BITS(9, 5), Rt = BITS(4, 0);
     unsigned bytes = 1u << size;
     u64 va = reg_xsp(c, Rn);
+    if (!sp_align_ok(c, Rn)) return;
 
     if (o2 && o1) {                            /* CAS/CASA/CASL/CASAL (LSE) */
         ldst_cas(c, insn);
@@ -726,6 +745,7 @@ static void ldst_vector_multi(CPU *c, u32 insn) {
     }
     unsigned regbytes = Q ? 16 : 8;
     u64 base = reg_xsp(c, Rn), addr = base;
+    if (!sp_align_ok(c, Rn)) return;
     unsigned total = nregs * regbytes;
 
     if (sel == 1) {                            /* contiguous: whole registers */
@@ -788,6 +808,7 @@ static void ldst_vector_single(CPU *c, u32 insn) {
     }
 
     u64 base = reg_xsp(c, Rn), addr = base;
+    if (!sp_align_ok(c, Rn)) return;
     unsigned total = selem * ebytes;
 
     for (unsigned r = 0; r < selem; r++) {

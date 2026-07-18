@@ -661,6 +661,32 @@ static void st_rdx_sized(Emit *e, unsigned szlog, int reg) {
  * on the allocator state that emission continues with. Loads converge with
  * the (zero/sign-extended) value in rax; a single post-merge ra_def commits
  * it to the destination's register. */
+/* SP-alignment check (SCTLR_EL1.SA/SA0) for an access whose base register is SP
+ * (o->a == VREG_SP). Emitted after the base host reg `ha` is materialized and
+ * before the access: if SP's low 4 bits are set, call jit_sp_check, which faults
+ * (and exits the block) when the check is enabled for the current EL, or returns
+ * 0 to let the native access proceed. The common case (aligned SP) is a test and
+ * a predicted-taken branch; the helper path mirrors the mem slow path's
+ * store/reload discipline. `ha` is not clobbered (test leaves it intact). */
+static void emit_spchk(BE *be, int ha, u64 pc, u32 icnt) {
+    Emit *e = be->e;
+    materialize_flags(be);                        /* the test clobbers EFLAGS */
+    rex(e, 1, 0, 0, ha); e8(e, 0xF7);             /* test ha, 15 (F7 /0 id) */
+    e8(e, (u8)(0xC0 | (ha & 7))); e32(e, 15);
+    u8 *aligned = jcc_fwd(e, CC_E);               /* ZF=1 => aligned, proceed */
+    slow_store_dirty(be);
+    mov_rr(e, 1, RDI, R14);                        /* jit_sp_check(c, pc) */
+    mov_ri(e, 1, RSI, pc);
+    ld64(e, RAX, R15, (s32)offsetof(JitEnv, helper_spchk));
+    e8(e, 0xFF); e8(e, 0xD0);                      /* call rax */
+    op_rr(e, 0, 0x85, RAX, RAX);                   /* test eax, eax */
+    u8 *proceed = jcc_fwd(e, CC_E);                /* 0 => no fault, proceed */
+    exit_plain(be, icnt);                          /* faulted => leave the block */
+    fwd_here(e, proceed);
+    slow_reload_clobbered(be);
+    fwd_here(e, aligned);
+}
+
 static void emit_mem(BE *be, const IRBlock *ir, int i) {
     Emit *e = be->e;
     const IROp *o = &ir->ops[i];
@@ -682,6 +708,7 @@ static void emit_mem(BE *be, const IRBlock *ir, int i) {
     int hb = -1;
     if (o->op == IRO_ST) hb = ra_use(be, o->b);  /* store operand */
     int ha = ra_use(be, o->a);                   /* base */
+    if (o->a == VREG_SP) emit_spchk(be, ha, o->imm2pc, o->icnt);
 
     /* va = base + offset  -> rsi (scratch; also the slow call's arg1) */
     if (o->imm == 0) {
@@ -890,6 +917,7 @@ static void emit_mem_run(BE *be, const IRBlock *ir, int i, int k) {
 
     materialize_flags(be);                       /* the probe needs EFLAGS */
     int ha = ra_use(be, o->a);
+    if (o->a == VREG_SP) emit_spchk(be, ha, o->imm2pc, o->icnt);
     for (int t = 0; t < k; t++) {
         const IROp *p = &ir->ops[i + t];
         if (is_st) hb[t] = ra_use(be, p->b);

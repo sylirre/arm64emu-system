@@ -516,6 +516,27 @@ static int enc_addsub_imm(Emit *e, int sub, unsigned rd, unsigned rn, u64 imm) {
  * stores), calls the helper, and reloads the caller-saved-mapped vregs so
  * both paths converge on the allocator state emission continues with. Loads
  * converge with the extended value in x16; one post-merge ra_def commits it. */
+/* SP-alignment check (SCTLR_EL1.SA/SA0) for an access whose base is SP
+ * (o->a == VREG_SP). Mirrors backend_x86_64.c emit_spchk: if SP's low 4 bits are
+ * set, call jit_sp_check, which faults (and exits the block) when the check is
+ * enabled for the current EL, or returns 0 to let the native access proceed. */
+static void emit_spchk(BE *be, int ha, u64 pc, u32 icnt) {
+    Emit *e = be->e;
+    materialize_flags(be);                        /* the tst sets NZCV */
+    ei(e, 0xF2400C1Fu | ((unsigned)ha << 5));      /* tst x[ha], #15 (ands xzr,..) */
+    u8 *aligned = bcond_fwd(e, 0);                 /* b.eq aligned (Z=1) */
+    slow_store_dirty(be);
+    ei(e, enc_mov(1, 0, 28));                      /* x0 = CPU* ; jit_sp_check(c, pc) */
+    emit_imm64(e, 1, pc);                          /* x1 = pc */
+    ei(e, enc_ldr(3, 16, 27, (unsigned)offsetof(JitEnv, helper_spchk)));
+    ei(e, enc_blr(16));
+    u8 *proceed = cbz_fwd(e, 0, 0);                /* cbz w0, proceed (no fault) */
+    exit_plain(be, icnt);                          /* faulted: leave the block */
+    fwd_here(e, proceed);
+    slow_reload_clobbered(be);
+    fwd_here(e, aligned);
+}
+
 static void emit_mem(BE *be, const IRBlock *ir, int i) {
     Emit *e = be->e;
     const IROp *o = &ir->ops[i];
@@ -536,6 +557,7 @@ static void emit_mem(BE *be, const IRBlock *ir, int i) {
     int hb = -1;
     if (o->op == IRO_ST) hb = ra_use(be, o->b);   /* store operand */
     int ha = ra_use(be, o->a);                    /* base */
+    if (o->a == VREG_SP) emit_spchk(be, ha, o->imm2pc, o->icnt);
 
     /* va = base + offset -> x1 (scratch; also the slow call's arg1) */
     if (o->imm == 0) {
@@ -687,6 +709,7 @@ static void emit_mem_run(BE *be, const IRBlock *ir, int i, int k) {
 
     materialize_flags(be);                        /* the probe needs NZCV */
     int ha = ra_use(be, o->a);
+    if (o->a == VREG_SP) emit_spchk(be, ha, o->imm2pc, o->icnt);
     for (int t = 0; t < k; t++) {
         const IROp *p = &ir->ops[i + t];
         if (is_st) hb[t] = ra_use(be, p->b);
