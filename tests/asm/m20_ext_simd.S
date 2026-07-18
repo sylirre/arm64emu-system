@@ -135,6 +135,52 @@ _start:
     mov     x2, v0.d[0]
     CKX     x2, 0x7fff, 18
 
+    /* ================= FEAT_DotProd: SDOT/UDOT ================= */
+    ldr     x10, =b_a
+    ldr     q4, [x10]
+    ldr     x10, =b_b
+    ldr     q5, [x10]
+    ldr     x10, =w_d
+    ldr     q0, [x10]
+    sdot    v0.4s, v4.16b, v5.16b        /* 0x80*0x80 sign corners + wrap */
+    mov     x2, v0.d[0]
+    CKX     x2, 0x3f0300000000, 21
+    mov     x2, v0.d[1]
+    CKX     x2, 0x7ffff50c00000153, 22
+
+    ldr     x10, =w_d
+    ldr     q0, [x10]
+    udot    v0.4s, v4.16b, v5.16b        /* same bytes zero-extended */
+    mov     x2, v0.d[0]
+    CKX     x2, 0x1bd030000ff00, 23
+    mov     x2, v0.d[1]
+    CKX     x2, 0x8001370c00000153, 24
+
+    ldr     x10, =w_d
+    ldr     q0, [x10]
+    sdot    v0.2s, v4.8b, v5.8b          /* Q=0 clears the upper half */
+    mov     x2, v0.d[0]
+    CKX     x2, 0x3f0300000000, 25
+    mov     x2, v0.d[1]
+    CKX     x2, 0x0, 26
+
+    ldr     x10, =w_d
+    ldr     q0, [x10]
+    sdot    v0.4s, v4.16b, v5.4b[3]      /* one Vm group broadcast */
+    mov     x2, v0.d[0]
+    CKX     x2, 0xffffa28200000fab, 27
+    mov     x2, v0.d[1]
+    CKX     x2, 0x7ffff50cffffffeb, 28
+
+    mov     v18.16b, v5.16b              /* Vm>=v16: 5-bit Rm proof */
+    ldr     x10, =w_d
+    ldr     q0, [x10]
+    udot    v0.4s, v4.16b, v18.4b[1]
+    mov     x2, v0.d[0]
+    CKX     x2, 0x1bd030000bfff, 29
+    mov     x2, v0.d[1]
+    CKX     x2, 0x800183ef0000037b, 30
+
     /* ============ vector FRINTX/FRINTI honor FPCR.RMode ============ */
     mrs     x4, fpcr
     movz    x5, #0x00C0, lsl #16         /* RMode = 0b11 (toward zero) */
@@ -173,4 +219,9 @@ w_a:    .word 0x80000000, 0x7FFFFFFF, 0x40000000, 0xC0000000
 w_b:    .word 0x80000000, 0x7FFFFFFF, 0x40000000, 0x40000000
 w_d:    .word 0x00000000, 0x00000001, 0xFFFFFFFF, 0x80000000
 sc_s:   .word 0x00000001, 0x80000000, 0x7FFFFFFF
+.balign 16
+b_a:    .byte 0x80, 0xFF, 0x7F, 0x01, 0x80, 0x80, 0xFF, 0xFF
+        .byte 0x00, 0x01, 0x02, 0x03, 0xFC, 0xFD, 0xFE, 0x10
+b_b:    .byte 0x80, 0x7F, 0x80, 0xFF, 0x80, 0x01, 0xFF, 0x7F
+        .byte 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88
 f_r:    .word 0x3FC00000, 0xBFC00000    /* 1.5f, -1.5f */

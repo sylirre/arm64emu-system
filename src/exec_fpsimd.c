@@ -1280,6 +1280,15 @@ static void simd_indexed(CPU *c, u32 insn) {
                       sqrdmlah_op(sx(velem_get(&vd, size, i), esize),
                                   sx(velem_get(&vn, size, i), esize),
                                   selt, esize, opc == 0xf) & emask);
+    } else if (opc == 0xe && size == 2) {                               /* SDOT/UDOT by elem (FEAT_DotProd) */
+        unsigned n = Q ? 4 : 2;
+        for (unsigned i = 0; i < n; i++) {           /* one 4-byte Vm group broadcast to every lane */
+            u32 acc = vd.s[i];
+            for (unsigned j = 0; j < 4; j++)
+                acc += U ? (u32)vn.b[4 * i + j] * vm.b[4 * index + j]
+                         : (u32)((s32)(s8)vn.b[4 * i + j] * (s8)vm.b[4 * index + j]);
+            r.s[i] = acc;
+        }
     } else { fpsimd_undef(c, insn); return; }
     c->v[Rd] = r;
 }
@@ -2735,6 +2744,20 @@ static void simd_three_same_extra(CPU *c, u32 insn) {
                                   sx(velem_get(&vn, size, i), esize),
                                   sx(velem_get(&vm, size, i), esize),
                                   esize, opc) & emask);
+        c->v[Rd] = r; return;
+    }
+    if (opc == 0x2) {                                /* SDOT (U=0) / UDOT (U=1), FEAT_DotProd */
+        if (size != 2) { fpsimd_undef(c, insn); return; }
+        V128 vn = c->v[Rn], vm = c->v[Rm], r = c->v[Rd];
+        unsigned n = Q ? 4 : 2;
+        for (unsigned i = 0; i < n; i++) {           /* 4x 8-bit products per 32-bit lane, wrap mod 2^32 */
+            u32 acc = r.s[i];
+            for (unsigned j = 0; j < 4; j++)
+                acc += U ? (u32)vn.b[4 * i + j] * vm.b[4 * i + j]
+                         : (u32)((s32)(s8)vn.b[4 * i + j] * (s8)vm.b[4 * i + j]);
+            r.s[i] = acc;
+        }
+        if (!Q) r.d[1] = 0;
         c->v[Rd] = r; return;
     }
     fpsimd_undef(c, insn);
