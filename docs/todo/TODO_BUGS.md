@@ -8,12 +8,17 @@
 > (N/imms/bit21, closes the u32 shift UB), move-wide hw≥2/sf=0, ldst_register
 > opc3/size3, ldst_pair opc3 → UNDEF. §2.5 HVC/SMC now UNDEF at EL0. §2.1/§2.3
 > MMU rejects out-of-range VAs + honors TCR TBI0/1 + EPD0/1. §2.2 MMFR0
-> TGran64=0xF. §2.4 PC-alignment fault added (SP-alignment still deferred). §2.6
-> WFE event register (SEV/SEVL/WFE). §3.3 PL031 DR tick-offset (was double-count).
-> §3.4 GICv2 ITARGETSR banked IRQs read 0x01 ("GIC CPU mask not found" gone).
-> §3.5 virtio-blk overflow-safe range check. §3.7 virtio-9p short header →
-> Rlerror. FEAT_FP16 now advertised (ID_AA64PFR0=0x110022). Boots to userspace
-> shell; jit+pd consistency byte-identical @300M.
+> TGran64=0xF. §2.4 PC- **and now SP-alignment** faults (SCTLR_EL1.SA/SA0):
+> interp via `sp_align_ok`, -pd routes SP-based mem ops through exec_a64, both
+> JIT backends inline a `test SP,15` + `jit_sp_check` bracket (`emit_spchk`).
+> §2.6 WFE event register (SEV/SEVL/WFE). §3.3 PL031 DR tick-offset (was
+> double-count) **and the RTCMR match/alarm interrupt** (`pl031_update` on
+> machine_tick drives INTID_RTC). §3.4 GICv2 ITARGETSR banked IRQs read 0x01
+> ("GIC CPU mask not found" gone). §3.5 virtio-blk overflow-safe range check.
+> §3.7 virtio-9p short header → Rlerror. FEAT_FP16 now advertised
+> (ID_AA64PFR0=0x110022). Boots to userspace shell; jit+pd consistency
+> byte-identical @300M; full boot-log identical (modulo embedded timestamps);
+> a64 backend qemu-user-validated. New tests: m14_spalign, m15_rtc.
 
 > **Update 2026-07-17 (arm64chroot core backport):** §1.1 (NaN→INT_MIN
 > converts) fixed at all five sites (also mirrored into arm64chroot);
