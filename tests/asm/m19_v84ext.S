@@ -136,6 +136,110 @@ _start:
     fcvtns  w2, d0
     CKX     x2, 4, 43
 
+    /* ================= FEAT_FLAGM/FLAGM2 ================= */
+    /* CFINV: C toggles, everything else survives */
+    msr     nzcv, xzr
+    cfinv
+    mrs     x3, nzcv
+    lsr     x3, x3, #28
+    CKX     x3, 0x2, 44
+    msr     nzcv, x6                     /* x6 = all-flags poison */
+    cfinv
+    mrs     x3, nzcv
+    lsr     x3, x3, #28
+    CKX     x3, 0xd, 45
+
+    /* AXFLAG/XAFLAG: pure 4-bit functions — run all 16 input nibbles and
+     * fold every output nibble into one 64-bit accumulator. */
+.macro FLGALL op, val, id
+    movz    x4, #0
+    movz    x5, #0
+1:  lsl     x3, x5, #28
+    msr     nzcv, x3
+    \op
+    mrs     x3, nzcv
+    lsr     x3, x3, #28
+    orr     x4, x3, x4, lsl #4
+    add     x5, x5, #1
+    cmp     x5, #16
+    b.ne    1b
+    CKX     x4, \val, \id
+.endm
+    FLGALL  axflag, 0x424446404244464, 46
+    FLGALL  xaflag, 0x8822336688223366, 47
+
+    /* RMIF: rotate + masked flag insert */
+    movz    x1, #0xA
+    msr     nzcv, xzr
+    rmif    x1, #0, #0xF                 /* whole nibble from x1<3:0> */
+    mrs     x3, nzcv
+    lsr     x3, x3, #28
+    CKX     x3, 0xa, 48
+    movz    x1, #1
+    orr     x1, x1, #0x8000000000000000  /* ROR 63 -> tmp<3:0> = 0b0011 */
+    msr     nzcv, xzr
+    rmif    x1, #63, #0x3
+    mrs     x3, nzcv
+    lsr     x3, x3, #28
+    CKX     x3, 0x3, 49
+    mov     x1, #-1                      /* tmp nibble 0xF, mask 0b0101 */
+    msr     nzcv, xzr
+    rmif    x1, #0, #0x5
+    mrs     x3, nzcv
+    lsr     x3, x3, #28
+    CKX     x3, 0x5, 50
+    movz    x1, #0xA5
+    msr     nzcv, x6                     /* poison: unmasked bits survive */
+    rmif    x1, #4, #0xF
+    mrs     x3, nzcv
+    lsr     x3, x3, #28
+    CKX     x3, 0xa, 51
+
+    /* SETF8/SETF16: N/Z/V from the narrow value, C unchanged */
+    movz    w1, #0
+    msr     nzcv, xzr
+    setf8   w1
+    mrs     x3, nzcv
+    lsr     x3, x3, #28
+    CKX     x3, 0x4, 52                  /* zero: Z set even from Z=0 */
+    movz    w1, #0x80
+    msr     nzcv, x6
+    setf8   w1
+    mrs     x3, nzcv
+    lsr     x3, x3, #28
+    CKX     x3, 0xb, 53                  /* N=1, V=1, Z cleared, C kept */
+    movz    w1, #0x180
+    msr     nzcv, xzr
+    setf8   w1
+    mrs     x3, nzcv
+    lsr     x3, x3, #28
+    CKX     x3, 0x8, 54                  /* bit8==bit7 -> V=0 */
+    movz    w1, #0x100
+    msr     nzcv, xzr
+    setf8   w1
+    mrs     x3, nzcv
+    lsr     x3, x3, #28
+    CKX     x3, 0x5, 55                  /* low byte zero but bit8 -> Z=1,V=1 */
+    movz    w1, #0x8000
+    msr     nzcv, xzr
+    setf16  w1
+    mrs     x3, nzcv
+    lsr     x3, x3, #28
+    CKX     x3, 0x9, 56
+    movz    w1, #0x8000
+    orr     w1, w1, #0x10000
+    msr     nzcv, xzr
+    setf16  w1
+    mrs     x3, nzcv
+    lsr     x3, x3, #28
+    CKX     x3, 0x8, 57
+    movz    w1, #0xFFFF, lsl #16
+    msr     nzcv, x6
+    setf16  w1
+    mrs     x3, nzcv
+    lsr     x3, x3, #28
+    CKX     x3, 0x7, 58                  /* low half zero, bit16 -> Z,V; C kept */
+
     /* all good */
     movz    x0, #0
     b       done

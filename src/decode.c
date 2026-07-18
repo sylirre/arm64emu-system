@@ -314,6 +314,30 @@ static void dp_register(CPU *c, u32 insn) {
                 set_x_sz(c, Rd, sf, r);
                 return;
             }
+            /* RMIF (FEAT_FLAGM): rotate Xn right by imm6, move tmp<3:0> into
+             * the NZCV bits selected by mask (bit3=N .. bit0=V). */
+            if (BIT(31) && !BIT(30) && BIT(29) && BITS(14, 10) == 1 && BIT(4) == 0) {
+                unsigned imm6 = BITS(20, 15), mask = BITS(3, 0);
+                u64 t = reg_x(c, Rn);
+                if (imm6) t = (t >> imm6) | (t << (64 - imm6));
+                unsigned nib = (((c->nzcv >> 28) & 0xf) & ~mask) | ((unsigned)t & mask);
+                c->nzcv = nib << 28;
+                return;
+            }
+            /* SETF8/SETF16 (FEAT_FLAGM): narrowing-overflow flags from the low
+             * 8/16 bits of Wn (register in the Rn field): N=sign, Z=zero,
+             * V=bit msb+1 EOR msb; C is unchanged. */
+            if (!BIT(31) && !BIT(30) && BIT(29) && BITS(20, 16) == 0 &&
+                (BITS(15, 10) == 0x02 || BITS(15, 10) == 0x12) && BITS(4, 0) == 0x0d) {
+                unsigned msb = BIT(14) ? 15 : 7;
+                u64 w = reg_x(c, Rn);
+                u32 f = c->nzcv & PS_C;
+                if ((w >> msb) & 1) f |= PS_N;
+                if ((w & ((2ULL << msb) - 1)) == 0) f |= PS_Z;
+                if (((w >> (msb + 1)) ^ (w >> msb)) & 1) f |= PS_V;
+                c->nzcv = f;
+                return;
+            }
             undefined(c, insn);
             return;
         }

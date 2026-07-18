@@ -22,6 +22,15 @@ static void msr_immediate(CPU *c, u32 insn) {
     unsigned op1 = (insn >> 16) & 7, op2 = (insn >> 5) & 7, crm = (insn >> 8) & 0xf;
     if (op1 == 0 && op2 == 5) {                 /* SPSel */
         c->sp_sel = crm & 1;
+    } else if (op1 == 0 && crm == 0 && op2 == 0) {  /* CFINV (FEAT_FLAGM) */
+        c->nzcv ^= PS_C;
+    } else if (op1 == 0 && crm == 0 && op2 == 1) {  /* XAFLAG (FEAT_FLAGM2): undo AXFLAG */
+        unsigned zf = !!(c->nzcv & PS_Z), cf = !!(c->nzcv & PS_C);
+        c->nzcv = ((!cf && !zf) ? PS_N : 0) | ((zf && cf) ? PS_Z : 0) |
+                  ((cf || zf)  ? PS_C : 0) | ((!cf && zf) ? PS_V : 0);
+    } else if (op1 == 0 && crm == 0 && op2 == 2) {  /* AXFLAG (FEAT_FLAGM2): x86-style CF/ZF */
+        unsigned zf = !!(c->nzcv & PS_Z), cf = !!(c->nzcv & PS_C), vf = !!(c->nzcv & PS_V);
+        c->nzcv = ((zf || vf) ? PS_Z : 0) | ((cf && !vf) ? PS_C : 0);
     } else if (op1 == 3 && op2 == 6) {          /* DAIFSet */
         c->daif |= (u32)(crm & 0xf) << 6;
     } else if (op1 == 3 && op2 == 7) {          /* DAIFClr */

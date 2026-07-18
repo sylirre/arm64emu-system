@@ -16,6 +16,8 @@
  * guarding against over-tightening. Runs as a flat -bin image at EL1 (MMU off).
  * x0=0 on success, else a failing-check id. */
 
+.arch armv8.5-a                         /* for the RMIF/SETF/LDAPUR neighbours */
+
 .text
 .global _start
 _start:
@@ -109,12 +111,30 @@ _start:
     movz    x11, #15
     cbnz    x21, fail
 
+    movz    x21, #0xffff
+    .inst   0x3a00042a                  /* RMIF with sf=0 */
+    movz    x11, #16
+    cbnz    x21, fail
+
+    movz    x21, #0xffff
+    .inst   0x1a00082d                  /* SETF8 with S=0 */
+    movz    x11, #17
+    cbnz    x21, fail
+
+    movz    x21, #0xffff
+    .inst   0xba000430                  /* RMIF with o2 (bit4) = 1 */
+    movz    x11, #18
+    cbnz    x21, fail
+
     /* ================= valid neighbours: must NOT trap (x21 stays 0xffff) === */
 
     movz    x21, #0xffff
     smulh   x0, x1, x2                  /* sf=1: valid */
     adcs    x0, x1, x2                  /* add/sub w/ carry bits[15:10]==0 */
     sbc     w0, w1, w2
+    rmif    x1, #3, #0xa                /* FLAGM neighbours: valid */
+    setf8   w2
+    setf16  w2
     add     x0, x1, x2, uxtx #4         /* extended shift==4: valid (max) */
     add     w0, w1, w2, lsl #31         /* shifted 32-bit imm6==31: valid (max) */
     and     w0, w1, w2, lsl #31         /* logical shifted 32-bit imm6==31 */
