@@ -310,6 +310,10 @@ _start:
     mov     x2, #0x33
     setp    [x0]!, x1!, x2
     CKX     x21, 0xffff, 52
+
+    /* advertised-contract pin: ID_AA64ISAR2_EL1.MOPS == 1 */
+    mrs     x2, id_aa64isar2_el1
+    CKX     x2, 0x10000, 53
 #endif
 
     mov     x0, #0
