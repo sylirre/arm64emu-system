@@ -953,12 +953,23 @@ static u64 usat_sub(u64 a, u64 b, unsigned e) {
  * forms: (d << esize) +/- 2*a*b + (1 << (esize-1)), then one final shift and
  * saturation. The accumulate happens at double width BEFORE the shift, and
  * 2*a*b alone overflows s64 at the INT32_MIN^2 corner, so the sum is formed in
- * 128-bit (cf. SMULH in decode.c). esize is 16 or 32. */
+ * two 64-bit words (no __int128: the 32-bit-host build lacks it). esize is 16
+ * or 32, so d<<esize + rounding and a*b each fit in s64 on their own; only the
+ * doubling of the product can carry into the high word. */
 static u64 sqrdmlah_op(s64 d, s64 a, s64 b, unsigned esize, int sub) {
-    __int128 acc = (__int128)d << esize;
-    __int128 p = (__int128)2 * a * b;
-    acc = (sub ? acc - p : acc + p) + ((s64)1 << (esize - 1));
-    return sat_s((s64)(acc >> esize), esize);
+    s64 base = (s64)((u64)d << esize) + ((s64)1 << (esize - 1));
+    s64 p = a * b;
+    u64 lo = (u64)base, hi = (u64)(base >> 63);
+    u64 plo = (u64)p << 1, phi = (u64)(p >> 63);   /* 2*p as a 128-bit pair */
+    if (sub) {
+        hi -= phi + (lo < plo);
+        lo -= plo;
+    } else {
+        u64 t = lo + plo;
+        hi += phi + (t < lo);
+        lo = t;
+    }
+    return sat_s((s64)((hi << (64 - esize)) | (lo >> esize)), esize);
 }
 
 /* FEAT_FCMA FCMLA core, shared by the vector and by-element forms. Lanes are
