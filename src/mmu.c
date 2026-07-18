@@ -61,9 +61,10 @@ static bool raise_abort(CPU *c, u64 va, AccType acc, unsigned fsc) {
     return false;
 }
 
-/* Check AP/XN permissions for an access; returns true if permitted. */
-static bool perm_ok(CPU *c, AccType acc, u8 ap, u8 uxn, u8 pxn) {
-    bool el0 = (c->el == 0);
+/* Check AP/XN permissions for an access at an explicit privilege level;
+ * returns true if permitted. el0 selects the EL0 view (used directly by the
+ * LDTR/STTR unprivileged override and the AT S1E0* probes). */
+static bool perm_ok_el(AccType acc, u8 ap, u8 uxn, u8 pxn, bool el0) {
     bool can_read, can_write, can_exec;
     switch (ap & 3) {
         case 0: can_read = !el0; can_write = !el0; break;            /* EL1 RW, EL0 none */
@@ -77,8 +78,22 @@ static bool perm_ok(CPU *c, AccType acc, u8 ap, u8 uxn, u8 pxn) {
     return can_exec && can_read;
 }
 
-/* Translate a 4 KB page; fills *pa_page and perms. Returns FSC (0 == success). */
-static unsigned walk(CPU *c, u64 va, u64 *pa_page, u8 *ap, u8 *uxn, u8 *pxn) {
+/* The privilege an access is checked against: current EL, except when the
+ * interpreter is running an LDTR/STTR (ldst_unpriv is set only around that
+ * one data access in decode.c), which is checked as EL0. */
+static inline bool acc_el0(const CPU *c) {
+    return c->el == 0 || c->ldst_unpriv;
+}
+
+static bool perm_ok(CPU *c, AccType acc, u8 ap, u8 uxn, u8 pxn) {
+    return perm_ok_el(acc, ap, uxn, pxn, acc_el0(c));
+}
+
+/* Translate a 4 KB page; fills *pa_page and perms, plus the leaf descriptor's
+ * AttrIndx[4:2] and SH[9:8] when attridx/sh are non-NULL (AT needs them for
+ * PAR_EL1; the access paths don't). Returns FSC (0 == success). */
+static unsigned walk(CPU *c, u64 va, u64 *pa_page, u8 *ap, u8 *uxn, u8 *pxn,
+                     u8 *attridx, u8 *sh) {
     Machine *m = c->m;
     u64 tcr = c->tcr[1];
     /* Regime select by bit 55 (== bit 63 for any well-formed address; the bits
@@ -129,6 +144,8 @@ static unsigned walk(CPU *c, u64 va, u64 *pa_page, u8 *ap, u8 *uxn, u8 *pxn) {
             r_ap = (desc >> 6) & 3; r_pxn = (desc >> 53) & 1; r_uxn = (desc >> 54) & 1;
             if (((desc >> 10) & 1) == 0) return FSC_ACCESS_L0 + level; /* AF */
             *ap = r_ap; *uxn = r_uxn; *pxn = r_pxn;
+            if (attridx) *attridx = (desc >> 2) & 7;
+            if (sh) *sh = (desc >> 8) & 3;
             return 0;
         }
         if ((desc & 3) == 3) {
@@ -137,6 +154,8 @@ static unsigned walk(CPU *c, u64 va, u64 *pa_page, u8 *ap, u8 *uxn, u8 *pxn) {
                 r_ap = (desc >> 6) & 3; r_pxn = (desc >> 53) & 1; r_uxn = (desc >> 54) & 1;
                 if (((desc >> 10) & 1) == 0) return FSC_ACCESS_L0 + level;
                 *ap = r_ap; *uxn = r_uxn; *pxn = r_pxn;
+                if (attridx) *attridx = (desc >> 2) & 7;
+                if (sh) *sh = (desc >> 8) & 3;
                 return 0;
             }
             table = desc & 0x0000FFFFFFFFF000ULL;                  /* next table */
@@ -154,9 +173,13 @@ bool mmu_translate(CPU *c, u64 va, AccType acc, u64 *pa_out) {
     unsigned i = tlb_idx(va);
     TLBEntry *e = &tlb[i];
     u64 page = va & ~0xfffULL;
+    /* An LDTR/STTR at EL1 matches and fills the EL0-tagged entries: same
+     * EL1&0 regime, EL0 permission view, and the tag mismatch keeps its
+     * (more restrictive) permissions from ever serving a normal EL1 access. */
+    bool el0 = acc_el0(c);
     if (e->valid && e->gen == g_tlb_gen && e->va_page == page
-        && e->el0 == (c->el == 0)
-        && perm_ok(c, acc, e->ap, e->uxn, e->pxn)) {
+        && e->el0 == el0
+        && perm_ok_el(acc, e->ap, e->uxn, e->pxn, el0)) {
         *pa_out = e->pa_page | (va & 0xfff);
         return true;
     }
@@ -172,13 +195,13 @@ bool mmu_translate(CPU *c, u64 va, AccType acc, u64 *pa_out) {
      * protected COW page) is never observed and the access faults forever -> the
      * copy returns EFAULT ("Bad address"). */
     u64 pa_page; u8 ap, uxn, pxn;
-    unsigned fsc = walk(c, va, &pa_page, &ap, &uxn, &pxn);
+    unsigned fsc = walk(c, va, &pa_page, &ap, &uxn, &pxn, NULL, NULL);
     if (fsc) { raise_abort(c, va, acc, fsc); return false; }
 
     e->valid = 1; e->gen = g_tlb_gen; e->va_page = page; e->pa_page = pa_page;
-    e->ap = ap; e->uxn = uxn; e->pxn = pxn; e->el0 = (c->el == 0);
+    e->ap = ap; e->uxn = uxn; e->pxn = pxn; e->el0 = el0;
 
-    if (!perm_ok(c, acc, ap, uxn, pxn)) { raise_abort(c, va, acc, FSC_PERM_L3); return false; }
+    if (!perm_ok_el(acc, ap, uxn, pxn, el0)) { raise_abort(c, va, acc, FSC_PERM_L3); return false; }
     *pa_out = pa_page | (va & 0xfff);
     return true;
 }
@@ -199,7 +222,7 @@ static void dtlb_fill(CPU *c, u64 va, u64 pa) {
     u64 r = DTLB_R, w = DTLB_W;
     if (c->sctlr[1] & 1) {
         TLBEntry *t = &tlb[tlb_idx(va)];   /* just filled/validated for va */
-        if (t->va_page != (va & ~0xfffULL) || t->el0 != (c->el == 0)) return;
+        if (t->va_page != (va & ~0xfffULL) || t->el0 != acc_el0(c)) return;
         r = perm_ok(c, ACC_READ,  t->ap, t->uxn, t->pxn) ? DTLB_R : 0;
         w = perm_ok(c, ACC_WRITE, t->ap, t->uxn, t->pxn) ? DTLB_W : 0;
     }
@@ -290,7 +313,7 @@ bool mem_peek(CPU *c, u64 va, unsigned size, u64 *out) {
     if ((c->sctlr[1] & 1) == 0) { *out = phys_read(c->m, va, size);
         return c->m->last_bus_status == BUS_OK; }
     u64 pa_page; u8 ap, uxn, pxn;
-    if (walk(c, va, &pa_page, &ap, &uxn, &pxn)) return false;
+    if (walk(c, va, &pa_page, &ap, &uxn, &pxn, NULL, NULL)) return false;
     *out = phys_read(c->m, pa_page | (va & 0xfff), size);
     return c->m->last_bus_status == BUS_OK;
 }
@@ -304,9 +327,30 @@ bool mmu_probe_pa(CPU *c, u64 va, u64 *pa_out) {
         return true;
     }
     u64 pa_page; u8 ap, uxn, pxn;
-    if (walk(c, va, &pa_page, &ap, &uxn, &pxn)) return false;
+    if (walk(c, va, &pa_page, &ap, &uxn, &pxn, NULL, NULL)) return false;
     *pa_out = pa_page | (va & 0xfff);
     return true;
+}
+
+/* AT S1E1R/W + S1E0R/W: probe the stage-1 translation of va and return the
+ * PAR_EL1 value. Uses walk() directly — no exception, no TLB fill (walk is
+ * side-effect-free), and AF==0 duly reports the access-flag FST.
+ * PAR_EL1 (F==0): PA[47:12], ATTR[63:56] = the MAIR byte the leaf's AttrIndx
+ * selects, SH[8:7] from the descriptor, NS[9] = 1 (non-secure-only machine).
+ * PAR_EL1 (F==1): FST[6:1], PTW=0, S=0 (stage 1), bit 11 RES1. */
+u64 mmu_at_s1(CPU *c, u64 va, bool is_write, bool as_el0) {
+    /* Stage 1 disabled: flat translation (attributes: ATTR/SH left 0). */
+    if ((c->sctlr[1] & 1) == 0)
+        return (va & 0x0000FFFFFFFFF000ULL) | (1ULL << 9);
+    u64 pa_page; u8 ap, uxn, pxn, attridx = 0, sh = 0;
+    unsigned fsc = walk(c, va, &pa_page, &ap, &uxn, &pxn, &attridx, &sh);
+    if (!fsc && !perm_ok_el(is_write ? ACC_WRITE : ACC_READ, ap, uxn, pxn, as_el0))
+        fsc = FSC_PERM_L3;                 /* same convention as mmu_translate */
+    if (fsc)
+        return 1ULL | ((u64)(fsc & 0x3f) << 1) | (1ULL << 11);
+    u64 mair_byte = (c->mair[1] >> (attridx * 8)) & 0xff;
+    return (pa_page & 0x0000FFFFFFFFF000ULL) | ((u64)sh << 7) | (1ULL << 9)
+         | (mair_byte << 56);
 }
 
 /* Return a host pointer to the start of a guest physical page if it is backed

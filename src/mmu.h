@@ -26,6 +26,10 @@ bool mem_peek(CPU *c, u64 va, unsigned size, u64 *out);
  * translations to drop. */
 bool mmu_probe_pa(CPU *c, u64 va, u64 *pa_out);
 
+/* AT S1E1R/W + S1E0R/W probe: returns the PAR_EL1 value for va (never faults,
+ * never fills the TLB). is_write selects the W check, as_el0 the EL0 view. */
+u64 mmu_at_s1(CPU *c, u64 va, bool is_write, bool as_el0);
+
 /* Instruction-fetch fast path. Caches the host base pointer of the current code
  * page so sequential fetches skip the TLB hash + bus dispatch. Only the page
  * *translation* is cached (a host base pointer), never decoded bytes — the
@@ -95,9 +99,17 @@ extern u32 g_tlb_gen;
 extern const u8 *g_jit_code_bitmap;
 void jit_invalidate_phys_range(u64 pa, u64 len);   /* defined in jit/jit.c */
 
+/* The EL0 bit is the *effective* access privilege: an LDTR/STTR at EL1
+ * (c->ldst_unpriv, set transiently by decode.c) tags as EL0, so it misses
+ * EL1-filled entries and shares the EL0-view entries — whose cached R/W were
+ * computed with exactly the EL0 permission check it needs. The JIT's inline
+ * probe precomputes these bits (dtlb_ctxgen) with ldst_unpriv always 0: the
+ * fast engines never execute LDTR/STTR natively (predecode leaves them
+ * GENERIC), so compiled code only ever probes at its real EL. */
 static inline u64 dtlb_tag(const CPU *c, u64 va) {
     return (va & ~0xfffULL) | ((u64)(g_tlb_gen & 0x3ff) << 2)
-         | ((c->sctlr[1] & 1) ? 2u : 0u) | (c->el == 0 ? 1u : 0u);
+         | ((c->sctlr[1] & 1) ? 2u : 0u)
+         | ((c->el == 0 || c->ldst_unpriv) ? 1u : 0u);
 }
 static inline DTlbEnt *dtlb_ent(u64 va) {
     return &g_dtlb[(va >> 12) & (DTLB_SIZE - 1)];

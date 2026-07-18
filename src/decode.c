@@ -583,6 +583,7 @@ static void ldst_register(CPU *c, u32 insn) {
     u64 va, base = reg_xsp(c, Rn);
     if (!sp_align_ok(c, Rn)) return;
     int wb = 0;          /* 0 none, 1 post, 2 pre */
+    bool unpriv = false; /* LDTR/STTR: access checked with EL0 permissions */
     if (BIT(24)) {                              /* unsigned immediate offset */
         va = base + ((u64)BITS(21, 10) << scale);
     } else if (BIT(21)) {                       /* register offset or atomic */
@@ -595,10 +596,16 @@ static void ldst_register(CPU *c, u32 insn) {
     } else {
         unsigned mode = BITS(11, 10);
         s64 imm9 = (s64)sign_extend(BITS(20, 12), 9);
-        if (mode == 0 || mode == 2) va = base + imm9; /* unscaled / unprivileged STTR/LDTR */
+        if (mode == 0 || mode == 2) {           /* unscaled / unprivileged LDTR/STTR */
+            if (mode == 2) {
+                if (V) { undefined(c, insn); return; }  /* no SIMD&FP unprivileged form */
+                /* At EL0 LDTR/STTR behave as LDR/STR; EL2+ isn't modeled here. */
+                unpriv = (c->el == 1);
+            }
+            va = base + imm9;
+        }
         else if (mode == 1) { va = base; wb = 1; }  /* post */
-        else if (mode == 3) { va = base + imm9; wb = 2; } /* pre */
-        else { undefined(c, insn); return; }
+        else { va = base + imm9; wb = 2; }          /* pre */
         if (wb == 1) base = base + imm9;            /* post writeback value */
     }
 
@@ -608,8 +615,10 @@ static void ldst_register(CPU *c, u32 insn) {
     if (!V && opc == 3 && size == 3) { undefined(c, insn); return; }
 
     bool ok;
+    c->ldst_unpriv = unpriv;   /* set only across this one access (mmu.c acc_el0) */
     if (V) ok = is_store ? vreg_store(c, Rt, va, bytes) : vreg_load(c, Rt, va, bytes);
     else   ok = is_store ? mem_write(c, va, bytes, reg_x(c, Rt)) : do_load(c, Rt, va, size, opc);
+    c->ldst_unpriv = 0;        /* fault paths return through here too (no longjmp) */
     if (!ok) return;   /* faulted: do NOT write back the base (instruction re-executes) */
 
     if (wb == 1) set_xsp(c, Rn, base);

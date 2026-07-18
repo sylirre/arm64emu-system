@@ -37,6 +37,10 @@ static void sys_op(CPU *c, u32 insn, unsigned op1, unsigned CRn, unsigned CRm,
                    unsigned op2, unsigned Rt) {
     if (CRn == 8) { tlb_flush_all(); return; }          /* TLBI * */
     if (CRn == 7) {
+        if (CRm == 8 && op1 == 0 && op2 <= 3) {          /* AT S1E1R/W, S1E0R/W */
+            c->par_el1 = mmu_at_s1(c, reg_x(c, Rt), op2 & 1, op2 >= 2);
+            return;
+        }
         if (CRm == 4 && op2 == 1) {                      /* DC ZVA: zero 64 bytes */
             u64 base = reg_x(c, Rt) & ~63ULL;
             for (unsigned i = 0; i < 64; i += 8)
@@ -190,7 +194,7 @@ void sysreg_exec(CPU *c, u32 insn) {
     if (op0 == 0) { msr_immediate(c, insn); return; }       /* MSR (immediate) */
     if (op0 == 1) {                                          /* SYS / SYSL */
         if (L == 0) sys_op(c, insn, op1, CRn, CRm, op2, Rt);
-        else set_x(c, Rt, 0);   /* SYSL reads -> 0 (e.g., AT not modelled) */
+        else set_x(c, Rt, 0);   /* SYSL reads -> 0 (no SYSL op is modelled) */
         return;
     }
     unsigned key = KEY(op0, op1, CRn, CRm, op2);

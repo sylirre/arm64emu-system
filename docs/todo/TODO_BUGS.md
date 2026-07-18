@@ -41,14 +41,20 @@ contract. None affects the Linux boot; revisit each only if a guest needs it.
   kernel/hypervisor relying on the EL0 FP trap for lazy save/restore would see
   stale vector state. Fix: check CPACR_EL1.FPEN at the FP/SIMD dispatch and raise
   `EC_FP_SIMD_TRAP` (0x07). *Carries boot-regression risk — gate carefully.*
-- **LDTR/STTR execute with current-EL permissions** (`decode.c`, the
-  unscaled/unprivileged addressing mode) — the "unprivileged" override isn't
-  modeled. Harmless while PAN isn't modeled, but must be revisited together if
-  PAN is ever advertised.
-- **AT S1E1R/W etc. are no-ops**, `SYSL` reads return 0 (`sysreg.c`), and
-  `PAR_EL1` returns whatever was last MSR'd to it (`sysreg.c`). A guest using
-  AT for VA→PA probing gets a stale/zero PAR. Implement AT on top of `walk()` if
-  a guest ever needs it (KVM-style code, some kexec/hibernate paths).
+
+**Resolved (2026-07-18, second batch):**
+- **LDTR/STTR now execute with true unprivileged (EL0-view) permissions** at
+  EL1: the access threads an `ldst_unpriv` flag through `mmu_translate` and the
+  D-TLB tag (`acc_el0`), sharing the EL0-tagged TLB/D-TLB entries. The fast
+  engines de-specialize the family to GENERIC (`predecode.c`), and the
+  unallocated V=1 "unprivileged SIMD" encodings now UNDEF. Measured boot cost
+  under `-jit`: none (17.45s vs 17.42s). PAN/UAO remain unadvertised —
+  revisit the pair together if PAN is ever added.
+- **AT S1E1R/W + S1E0R/W implemented** (`mmu_at_s1` on top of `walk()`, which
+  now also extracts AttrIndx/SH): PAR_EL1 gets real PA/ATTR/SH/NS on success
+  and F/FST on faults. AT S1E1RP/WP stay no-op pending PAN; `SYSL` still
+  reads-as-zero (no modelled SYSL op — accepted). Regression:
+  `tests/asm/m17_at_unpriv.S`.
 
 ---
 

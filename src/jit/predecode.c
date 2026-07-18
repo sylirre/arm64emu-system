@@ -284,9 +284,11 @@ static void fill_ldst(PDEnt *e, u32 insn) {
         {                                            /* imm9 addressing modes */
             unsigned mode = BITS(11, 10);
             u64 imm9 = (u64)(s64)sign_extend(BITS(20, 12), 9);
-            if (mode == 0 || mode == 2) {            /* LDUR/STUR (+unpriv): plain
-                                                      * (decode.c also runs LDTR/
-                                                      * STTR as plain EL-priv) */
+            if (mode == 2) return;                   /* LDTR/STTR: unprivileged EL0-
+                                                      * view access (or UNDEF for the
+                                                      * V forms) -> GENERIC, decode.c
+                                                      * has the semantics */
+            if (mode == 0) {                         /* LDUR/STUR: plain */
                 if (V) {
                     if (opc & 2) {
                         if (size != 0) return;

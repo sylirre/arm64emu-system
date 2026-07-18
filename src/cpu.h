@@ -52,6 +52,7 @@ typedef struct CPU {
     V128 v[32];
     u32 fpcr, fpsr;
     bool fp_trapped;  /* set if CPACR/CPTR disables FP (kept simple) */
+    u8 ldst_unpriv;   /* transient: current data access is LDTR/STTR (EL0 view) */
 
     /* Banked system registers (index by EL where meaningful) */
     u64 sctlr[4];
