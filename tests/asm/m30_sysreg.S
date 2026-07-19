@@ -10,10 +10,11 @@
  * (write a pattern, read it back) to confirm the banked state is wired through
  * do_msr/do_mrs. x0=0 on success, else a failing-check id.
  *
- * NB: this flat --bin run has no platform devices, so it must not write any
- * CRn==14 register (CNTKCTL/CNT*): do_msr re-runs timer_update on every CRn==14
- * write, which dereferences the (absent) GIC. The generic-timer registers are
- * covered under --bios by m25_timer instead. */
+ * The CNTKCTL_EL1 round-trip doubles as a regression pin: do_msr re-runs
+ * timer_update on every CRn==14 write, which reaches gic_set_irq with a NULL
+ * gic in this device-less --bin run — gic_set_irq must treat that as a no-op
+ * rather than dereferencing it. The generic-timer IRQ behaviour proper is
+ * covered under --bios by m25_timer. */
 .text
 .global _start
 
@@ -107,6 +108,7 @@ _start:
     RT      par_el1,       0x00000000fedcba98, 360
     RT      sp_el0,        0x0000000040300000, 361
     RT      vbar_el1,      0x0000000040010000, 362
+    RT      cntkctl_el1,   0x0000000000000303, 363   /* CRn==14: also pins the device-less no-crash path */
 
     movz    x0, #0
     hlt     #0

@@ -31,6 +31,11 @@ void gic_update(GIC *g) {
 }
 
 void gic_set_irq(GIC *g, int intid, int level) {
+    /* A device-less run (a raw --bin image with no platform_build) has no GIC,
+     * so asserting an interrupt line is a no-op. This guards the generic-timer
+     * path in particular: do_msr re-runs timer_update on every CRn==14 MSR
+     * (CNTKCTL/CNT*), and without a platform that reaches here with a NULL gic. */
+    if (!g) return;
     if (intid < 0 || intid >= GIC_NUM_IRQS) return;
     bool lv = level != 0;
     /* edge: a rising edge pends; level: pending follows the line */
