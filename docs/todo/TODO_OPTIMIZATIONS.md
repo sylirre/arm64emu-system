@@ -70,6 +70,13 @@ in-guest `dd if=/dev/zero of=/dev/null bs=1M` (DC ZVA path) and
   path, observably identical (same bytes, same split-VA fault). In-guest
   `-pd`: 2 GB `dd /dev/zero → /dev/null` −4.2%, 128 MB pipe copy −3.6%;
   boot neutral-to-better.
+- **#18 — CRC32 slicing-by-8** (2026-07-19): `crc32_step` uses lazily-built
+  8×256 tables per polynomial; CRC32X is one combined 8-lookup step (13.7×
+  the bitwise helper). Benefits **all three tiers** — predecode leaves the
+  CRC32 family GENERIC, so `-pd`/`-jit` call the same helper. Verified
+  bit-exact vs the old code (KATs + 2M random inputs, both polys, all
+  widths). No boot delta expected or seen: initramfs boots touch no
+  CRC32C-checksummed filesystem; the win applies to ext4/btrfs guests.
 
 ---
 
@@ -123,10 +130,6 @@ Lower ROI now that `-jit`/`-pd` exist; pursue only to speed the portable path.
   measurement work.
 - **17. TLB entry shape** (`mmu.c:14` `TLBEntry` is ~25 B → 32 B padded): pack to
   16 B (flags in low bits) to fit two per cache line; fold with a re-profile.
-- **18. CRC32 via slicing-by-8 / hardware** (`decode.c:74` `crc32_step` is
-  bitwise, 8 steps/byte): ext4 metadata checksums use CRC32C heavily. Use
-  slicing-by-8 tables or the x86 `crc32` instruction (exact CRC32C match).
-
 ---
 
 ## Tried and rejected — do not repeat

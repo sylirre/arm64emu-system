@@ -82,13 +82,38 @@ static u64 shift_reg(u64 v, unsigned type, unsigned amount, bool is64) {
 
 /* ARMv8 CRC32/CRC32C: bit-reflected CRC over `bytes` low bytes of `data`,
  * accumulator `acc`. poly is the reflected polynomial (0xEDB88320 for CRC32,
- * 0x82F63B78 for CRC32C). Matches the hardware instruction the kernel uses. */
-static u32 crc32_step(u32 acc, u64 data, unsigned bytes, u32 poly) {
-    for (unsigned i = 0; i < bytes; i++) {
-        acc ^= (u32)((data >> (8 * i)) & 0xff);
+ * 0x82F63B78 for CRC32C). Matches the hardware instruction the kernel uses.
+ * Slicing-by-8 (lazily built 8x256 tables per polynomial): CRC32X consumes
+ * its 8 bytes in one combined lookup instead of 64 bit-steps — ext4 metadata
+ * checksumming leans on this, and all three tiers execute CRC32 through this
+ * helper (predecode leaves the family GENERIC). */
+static void crc32_tab_init(u32 t[8][256], u32 poly) {
+    for (unsigned i = 0; i < 256; i++) {
+        u32 c = i;
         for (int k = 0; k < 8; k++)
-            acc = (acc >> 1) ^ (poly & (u32)(-(s32)(acc & 1)));
+            c = (c >> 1) ^ (poly & (u32)(-(s32)(c & 1)));
+        t[0][i] = c;
     }
+    for (unsigned i = 0; i < 256; i++)
+        for (unsigned j = 1; j < 8; j++)
+            t[j][i] = (t[j - 1][i] >> 8) ^ t[0][t[j - 1][i] & 0xff];
+}
+
+static u32 crc32_step(u32 acc, u64 data, unsigned bytes, u32 poly) {
+    static u32 tab[2][8][256];
+    unsigned p = (poly == 0x82F63B78u);
+    if (tab[p][0][1] == 0) crc32_tab_init(tab[p], poly);
+    const u32 (*t)[256] = tab[p];
+    if (bytes == 8) {
+        acc ^= (u32)data;
+        u32 hi = (u32)(data >> 32);
+        return t[7][acc & 0xff] ^ t[6][(acc >> 8) & 0xff] ^
+               t[5][(acc >> 16) & 0xff] ^ t[4][acc >> 24] ^
+               t[3][hi & 0xff] ^ t[2][(hi >> 8) & 0xff] ^
+               t[1][(hi >> 16) & 0xff] ^ t[0][hi >> 24];
+    }
+    for (unsigned i = 0; i < bytes; i++)
+        acc = (acc >> 8) ^ t[0][(acc ^ (u32)(data >> (8 * i))) & 0xff];
     return acc;
 }
 
