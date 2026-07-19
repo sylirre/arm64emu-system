@@ -71,6 +71,20 @@ bool mem_write128(CPU *c, u64 va, const V128 *val);
 /* Invalidate the software TLB (called on TLBI / TTBR / context changes). */
 void tlb_flush_all(void);
 
+/* Single-page invalidation for the VA-form TLBIs (VAE1/VAAE1/VALE1/VAALE1):
+ * clears the page's TLB/D-TLB slots and the fetch cache without bumping the
+ * flush generation, so every other cached translation survives. Escalates to
+ * tlb_flush_all when va falls inside the recorded large-page (block-mapped)
+ * range — the TLB fragments 2 MB/1 GB blocks into 4 KB entries, and one
+ * block-VA TLBI must not leave sibling fragments alive. */
+void tlb_flush_page(u64 va);
+
+/* Bumped by every tlb_flush_page: the JIT dispatcher purges its VA-keyed
+ * indirect-branch jcache when this moves (its blocks/D-TLB need nothing —
+ * blocks are PA-keyed and re-verified at dispatch, D-TLB slots are cleared
+ * above). */
+extern u32 g_tlbi_va_seq;
+
 /* ---------------- data-access fast path: host-pointer D-TLB ----------------
  * Direct-mapped cache of VA page -> host RAM page, probed by mem_read/mem_write
  * before the full translate+bus path. RAM pages only: flash (CFI command state)

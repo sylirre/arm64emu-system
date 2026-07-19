@@ -338,6 +338,7 @@ static int jit_env_init(JitEnv *env, CPU *c) {
      * zeroed entries must still become the all-ones empty pattern. */
     memset(env->jcache, 0xff, sizeof env->jcache);
     env->jc_gen = g_tlb_gen;
+    env->jc_va_seq = g_tlbi_va_seq;
     env->slowmem = getenv("AEJIT_SLOWMEM") != NULL;
     if (g_jit_stats < 0) {
         const char *s = getenv("AEJIT_STATS");
@@ -761,6 +762,14 @@ StepResult jit_step(CPU *c, u64 slice, u64 max_insn) {
              * ends its block, so the purge always runs before the next
              * generated-code jcache probe can hit. */
             env->jc_gen = g_tlb_gen;
+            jcache_purge(env);
+        }
+        if (UNLIKELY(env->jc_va_seq != g_tlbi_va_seq)) {
+            /* VA-form TLBI (tlb_flush_page): the generation didn't move —
+             * TLB/D-TLB survive minus the one page — but that page's VA->code
+             * binding may be stale, and the jcache is VA-keyed. Same block-end
+             * guarantee as above (TLBI runs via CALL1 and ends its block). */
+            env->jc_va_seq = g_tlbi_va_seq;
             jcache_purge(env);
         }
 

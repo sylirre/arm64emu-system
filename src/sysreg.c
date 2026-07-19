@@ -50,7 +50,21 @@ static void msr_immediate(CPU *c, u32 insn) {
 
 static void sys_op(CPU *c, u32 insn, unsigned op1, unsigned CRn, unsigned CRm,
                    unsigned op2, unsigned Rt) {
-    if (CRn == 8) { tlb_flush_all(); return; }          /* TLBI * */
+    if (CRn == 8) {                                      /* TLBI * */
+        /* EL1 VA forms — VAE1/VAAE1/VALE1/VAALE1, IS (CRm==3) and non-IS
+         * (CRm==7) — invalidate a single page: Xt[43:0] holds VA[55:12],
+         * rebuilt to a canonical VA by sign-extending bit 55. Every other
+         * form (VMALLE1, ASIDE1, the v8.4 OS/range encodings, anything
+         * unrecognized) keeps the conservative full flush. */
+        if (op1 == 0 && (CRm == 3 || CRm == 7) && (op2 & 1)) {
+            u64 va = (reg_x(c, Rt) & 0xFFFFFFFFFFFULL) << 12;
+            if (va & (1ULL << 55)) va |= 0xFF00000000000000ULL;
+            tlb_flush_page(va);
+        } else {
+            tlb_flush_all();
+        }
+        return;
+    }
     if (CRn == 7) {
         if (CRm == 8 && op1 == 0 && op2 <= 3) {          /* AT S1E1R/W, S1E0R/W */
             c->par_el1 = mmu_at_s1(c, reg_x(c, Rt), op2 & 1, op2 >= 2);

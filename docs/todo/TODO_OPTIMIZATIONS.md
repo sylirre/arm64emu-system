@@ -46,19 +46,34 @@ in-guest `dd if=/dev/zero of=/dev/null bs=1M` (DC ZVA path) and
   when `pending` didn't move (the raw line isn't a `gic_best` input), killing
   the 2×/tick 256-entry rescan. Boot deltas for the batch: interp −4.4%,
   `-pd` −6.4%, `-jit` −16% (220→262 MIPS).
+- **#4 stage 1 — TLBI by-VA** (2026-07-19): the EL1 VA forms (`VAE1`/`VAAE1`/
+  `VALE1`/`VAALE1`[`IS`]) now take `tlb_flush_page`: clear the page's TLB +
+  D-TLB slots by index and the fetch cache, leave `g_tlb_gen` alone. Guard: a
+  VA inside the recorded union range of block-mapped fills (`lp_base/lp_mask`,
+  QEMU-style — the TLB fragments 2 MB blocks into 4 KB entries) escalates to a
+  full flush. The JIT purges its VA-keyed jcache on the new `g_tlbi_va_seq`
+  (blocks are PA-keyed and re-verified at dispatch; TLBI CALL1s end their
+  block, so the dispatcher-checked purge is race-free). Instrumented full boot:
+  26773/28742 flush events (93%) became single-page; leftovers = 1645
+  large-page escalations + 65 non-VA TLBIs + 259 TTBR/TCR/SCTLR flushes.
+  Boot wall-clock neutral (±1%, interleaved A/B); fork/exec-heavy in-guest
+  shell segment ≈2% faster under `-jit` — the win scales with user-space
+  memory churn, which the boot barely exercises.
 
 ---
 
 ## Device / system — benefits all three tiers (highest ROI now)
 
-### 4. Finer-grained TLB invalidation (TLBI by VA, then ASID tagging)
-`sysreg.c:38` still flushes the whole TLB on *every* TLBI (`CRn == 8`). The flush
-itself is now O(1) (#1), so only the **miss-rate** cost remains: Linux's per-page
-`TLBI VAE1IS`/`VALE1IS` on every unmap/COW/mprotect invalidate all 4096 entries.
-Staged fix: (1) decode VA-form TLBIs and invalidate just the one direct-mapped
-entry (+ `g_fcache` if its page matches); (2) tag entries with ASID + nG and stop
-flushing on TTBR0 writes so context switches retain entries. Correctness-
-sensitive — validate with the AECOV differential method + `m2_mmu.S`/`m6_cow.S`.
+### 4 stage 2. ASID-tagged TLB entries: measured, deferred
+Stage 1 (TLBI by-VA, above) landed 2026-07-19. Stage 2 — tag entries with
+ASID + nG and stop flushing on TTBR0 writes — was *measured and deferred*: an
+instrumented full boot shows only **259** TTBR/TCR/SCTLR-write flushes total
+(vs 26773 VA-TLBIs that stage 1 already made single-page), so its ceiling here
+is a few hundred avoided O(1) flush+refill cycles per boot. It would also
+change the D-TLB tag ABI shared with both JIT backends' inline probes
+(`dtlb_ctxgen`) — high blast radius for negligible measured payoff. Revisit
+only if a context-switch-heavy workload (many concurrent processes) profiles
+TTBR0-write refills as hot.
 
 ### 11. DC ZVA: one translation + host memset
 `sys_op` (`sysreg.c:40`) still does ZVA as 8 × `mem_write(8B)`. Each write now
@@ -128,9 +143,7 @@ Lower ROI now that `-jit`/`-pd` exist; pursue only to speed the portable path.
 
 ## Suggested order
 
-1. **#4** (TLBI by-VA / ASID) — the biggest remaining TLB-miss reducer;
-   correctness-sensitive, differential-test it.
-2. **#11/#12** — cheap cleanups now that the D-TLB carries them.
-3. **#14** build-flag measurement pass.
-4. Interpreter micro-ops (#9/#10/#13/#15/#3/#16/#17/#18): low priority — `-jit`
+1. **#11/#12** — cheap cleanups now that the D-TLB carries them.
+2. **#14** build-flag measurement pass.
+3. Interpreter micro-ops (#9/#10/#13/#15/#3/#16/#17/#18): low priority — `-jit`
    is the speed path; do these only to lift the portable interpreter.

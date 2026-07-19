@@ -104,6 +104,10 @@ typedef struct JitEnv {
                                  * spx<<2 | fp_trapped<<4); jcache probes OR
                                  * it into pc<<3 */
     u32 jc_gen;                 /* g_tlb_gen the jcache was last purged at */
+    u32 jc_va_seq;              /* g_tlbi_va_seq ditto: a VA-form TLBI leaves
+                                 * the generation alone but may retarget one
+                                 * page's VA->code binding, so the VA-keyed
+                                 * jcache is purged on this counter too */
     u64 dtlb_ctxgen;            /* low 12 bits of the current dtlb_tag():
                                  * (g_tlb_gen & 0x3ff) << 2 | MMU<<1 | EL0.
                                  * Inline probes OR this into the VA page for

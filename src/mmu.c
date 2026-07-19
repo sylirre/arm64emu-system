@@ -30,6 +30,29 @@ DTlbEnt g_dtlb[DTLB_SIZE];
 u32 g_tlb_gen = 1;
 const u8 *g_jit_code_bitmap;
 
+/* Union range of all block-mapped (2 MB/1 GB) translations cached since the
+ * last full flush, with the TBI tag byte stripped (accesses may carry tags,
+ * TLBI VAs never do). lp_base == ~0 means none: no page-aligned VA matches
+ * under the ~0 mask. A VA-form TLBI inside this range must escalate to a full
+ * flush because the TLB holds the block as many 4 KB fragments (see
+ * tlb_flush_page). Growing the union keeps it conservative: kernel linear-map
+ * blocks live in high TTBR1 VAs, so the hot user-space per-page TLBIs
+ * (COW/unmap) stay out of it unless the guest maps user hugepages. */
+static u64 lp_base = ~0ULL, lp_mask = ~0ULL;
+#define VA_NOTAG(va) ((va) & 0x00FFFFFFFFFFFFFFULL)
+
+static inline unsigned tlb_idx(u64 va) { return (unsigned)((va >> 12) & (TLB_ENTRIES - 1)); }
+
+static void lp_record(u64 va, unsigned blk_shift) {
+    u64 bmask = ~((1ULL << blk_shift) - 1) & 0x00FFFFFFFFFFFFFFULL;
+    u64 bbase = VA_NOTAG(va) & bmask;
+    if (lp_base == ~0ULL) { lp_base = bbase; lp_mask = bmask; return; }
+    u64 m = lp_mask & bmask;
+    while ((lp_base & m) != (bbase & m)) m <<= 1;   /* smallest covering range */
+    lp_mask = m;
+    lp_base &= m;
+}
+
 /* O(1): bumping the generation invalidates every TLB and D-TLB entry (both
  * carry the generation in their tags). Boot flushes this on every TLBI and
  * TTBR/TCR/SCTLR write — ~1600 times per 4M instructions — so the previous
@@ -45,10 +68,24 @@ void tlb_flush_all(void) {
             g_tlb_gen = 1;
         }
     }
+    lp_base = lp_mask = ~0ULL;   /* every fragment died with the generation */
     g_fcache.host = NULL;   /* mapping may have changed; force a re-translate */
 }
 
-static inline unsigned tlb_idx(u64 va) { return (unsigned)((va >> 12) & (TLB_ENTRIES - 1)); }
+u32 g_tlbi_va_seq;
+
+void tlb_flush_page(u64 va) {
+    if ((VA_NOTAG(va) & lp_mask) == lp_base) { tlb_flush_all(); return; }
+    /* One direct-mapped slot per structure can hold this page: clear by index,
+     * no tag compare (a TBI-tagged fill of the same page carries a different
+     * tag; evicting an unrelated collider is just a refill). A zeroed D-TLB
+     * entry has no R/W bits, so it can never fast-path. */
+    tlb[tlb_idx(va)].valid = 0;
+    DTlbEnt *de = &g_dtlb[(va >> 12) & (DTLB_SIZE - 1)];
+    de->tag = 0; de->pte = 0;
+    g_fcache.host = NULL;
+    ++g_tlbi_va_seq;
+}
 
 /* ---------- fault injection ---------- */
 static bool raise_abort(CPU *c, u64 va, AccType acc, unsigned fsc) {
@@ -91,9 +128,12 @@ static bool perm_ok(CPU *c, AccType acc, u8 ap, u8 uxn, u8 pxn) {
 
 /* Translate a 4 KB page; fills *pa_page and perms, plus the leaf descriptor's
  * AttrIndx[4:2] and SH[9:8] when attridx/sh are non-NULL (AT needs them for
- * PAR_EL1; the access paths don't). Returns FSC (0 == success). */
+ * PAR_EL1; the access paths don't). When blk_shift is non-NULL it reports the
+ * leaf granularity: 0 for a level-3 page, else the block's bit width (21/30 —
+ * the TLB fill path records these for tlb_flush_page's escalation range).
+ * Returns FSC (0 == success). */
 static unsigned walk(CPU *c, u64 va, u64 *pa_page, u8 *ap, u8 *uxn, u8 *pxn,
-                     u8 *attridx, u8 *sh) {
+                     u8 *attridx, u8 *sh, unsigned *blk_shift) {
     Machine *m = c->m;
     u64 tcr = c->tcr[1];
     /* Regime select by bit 55 (== bit 63 for any well-formed address; the bits
@@ -146,6 +186,7 @@ static unsigned walk(CPU *c, u64 va, u64 *pa_page, u8 *ap, u8 *uxn, u8 *pxn,
             *ap = r_ap; *uxn = r_uxn; *pxn = r_pxn;
             if (attridx) *attridx = (desc >> 2) & 7;
             if (sh) *sh = (desc >> 8) & 3;
+            if (blk_shift) *blk_shift = shift;
             return 0;
         }
         if ((desc & 3) == 3) {
@@ -195,8 +236,10 @@ bool mmu_translate(CPU *c, u64 va, AccType acc, u64 *pa_out) {
      * protected COW page) is never observed and the access faults forever -> the
      * copy returns EFAULT ("Bad address"). */
     u64 pa_page; u8 ap, uxn, pxn;
-    unsigned fsc = walk(c, va, &pa_page, &ap, &uxn, &pxn, NULL, NULL);
+    unsigned blk_shift = 0;
+    unsigned fsc = walk(c, va, &pa_page, &ap, &uxn, &pxn, NULL, NULL, &blk_shift);
     if (fsc) { raise_abort(c, va, acc, fsc); return false; }
+    if (blk_shift) lp_record(va, blk_shift);   /* caching a block fragment */
 
     e->valid = 1; e->gen = g_tlb_gen; e->va_page = page; e->pa_page = pa_page;
     e->ap = ap; e->uxn = uxn; e->pxn = pxn; e->el0 = el0;
@@ -313,7 +356,7 @@ bool mem_peek(CPU *c, u64 va, unsigned size, u64 *out) {
     if ((c->sctlr[1] & 1) == 0) { *out = phys_read(c->m, va, size);
         return c->m->last_bus_status == BUS_OK; }
     u64 pa_page; u8 ap, uxn, pxn;
-    if (walk(c, va, &pa_page, &ap, &uxn, &pxn, NULL, NULL)) return false;
+    if (walk(c, va, &pa_page, &ap, &uxn, &pxn, NULL, NULL, NULL)) return false;
     *out = phys_read(c->m, pa_page | (va & 0xfff), size);
     return c->m->last_bus_status == BUS_OK;
 }
@@ -327,7 +370,7 @@ bool mmu_probe_pa(CPU *c, u64 va, u64 *pa_out) {
         return true;
     }
     u64 pa_page; u8 ap, uxn, pxn;
-    if (walk(c, va, &pa_page, &ap, &uxn, &pxn, NULL, NULL)) return false;
+    if (walk(c, va, &pa_page, &ap, &uxn, &pxn, NULL, NULL, NULL)) return false;
     *pa_out = pa_page | (va & 0xfff);
     return true;
 }
@@ -343,7 +386,7 @@ u64 mmu_at_s1(CPU *c, u64 va, bool is_write, bool as_el0) {
     if ((c->sctlr[1] & 1) == 0)
         return (va & 0x0000FFFFFFFFF000ULL) | (1ULL << 9);
     u64 pa_page; u8 ap, uxn, pxn, attridx = 0, sh = 0;
-    unsigned fsc = walk(c, va, &pa_page, &ap, &uxn, &pxn, &attridx, &sh);
+    unsigned fsc = walk(c, va, &pa_page, &ap, &uxn, &pxn, &attridx, &sh, NULL);
     if (!fsc && !perm_ok_el(is_write ? ACC_WRITE : ACC_READ, ap, uxn, pxn, as_el0))
         fsc = FSC_PERM_L3;                 /* same convention as mmu_translate */
     if (fsc)
