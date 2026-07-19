@@ -8,10 +8,10 @@ the tree moves — treat them as hints.
 **Perf landscape:** the emulator now has three execution tiers — the plain
 interpreter (portable reference), **`-pd`** (computed-goto direct-threaded, ~2.46×,
 ~90 MIPS), and **`-jit`** (native codegen, ~10×, ~370 MIPS). `-jit`/`-pd` bypass
-the interpreter's per-instruction loop entirely, so the interpreter micro-ops
-below (#9/#10/#13/#15) now speed only the portable interpreter and the `exec_a64`
-helper fallback — **for raw speed, use `-jit`.** The device/system items
-(#4/#11/#12) sit outside the per-instruction path and benefit every tier.
+the interpreter's per-instruction loop entirely — **for raw speed, use
+`-jit`.** Everything the survey found has now landed or been measured and
+rejected (see below); only the #14 build-flag pass and the #17 re-profile
+remain open.
 
 **Measure before/after every item.** Callgrind
 (`valgrind --tool=callgrind ./arm64emu -bios … -maxinsn 300000000`), `AEPROF=1`
@@ -78,11 +78,24 @@ in-guest `dd if=/dev/zero of=/dev/null bs=1M` (DC ZVA path) and
   widths). No boot delta expected or seen: initramfs boots touch no
   CRC32C-checksummed filesystem; the win applies to ext4/btrfs guests.
 
+- **#9/#10/#13/#15/#3/#16 — interpreter micro batch** (2026-07-19):
+  add_with_carry skips the NZCV math when S==0 (#9); decode_bitmasks is
+  memoized behind a 13-bit immN:immr:imms table, 32-bit = truncated 64-bit
+  result (#10); the fetch cache is two entries indexed by `el == 0` so the
+  syscall/ERET ping-pong keeps both code pages hot (#13, also felt by `-pd`
+  which fetches through mem_ifetch); loads_stores tests register/pair forms
+  first and `undefined` is cold (#15 — jump-table conversion not pursued:
+  exec_a64's top level is already a switch and the chains are now
+  frequency-ordered); phys_read/phys_write use fixed-size copies for the
+  power-of-two sizes (#3); mem_write's vawatch check sits behind one
+  `unlikely` guard (#16). Boot deltas: interp −4.6%, `-pd` −3.9%,
+  `-jit` −1.4%.
+
 ---
 
-## Device / system — benefits all three tiers (highest ROI now)
+## Measured and deferred
 
-### 4 stage 2. ASID-tagged TLB entries: measured, deferred
+### 4 stage 2. ASID-tagged TLB entries
 Stage 1 (TLBI by-VA, above) landed 2026-07-19. Stage 2 — tag entries with
 ASID + nG and stop flushing on TTBR0 writes — was *measured and deferred*: an
 instrumented full boot shows only **259** TTBR/TCR/SCTLR-write flushes total
@@ -95,32 +108,6 @@ TTBR0-write refills as hot.
 
 ---
 
-## Interpreter micro — portable interpreter + `exec_a64` helper only
-
-Lower ROI now that `-jit`/`-pd` exist; pursue only to speed the portable path.
-
-- **9. Skip NZCV on non-flag-setting ADD/SUB** (`decode.c:148-157,240-258`):
-  `add_with_carry` computes N/Z/C/V for every ADD/SUB even when `S==0` and the
-  caller discards them. Branch on `S` first.
-- **10. Memoize `decode_bitmasks`** (`decode.c:104`): a clz + rotates + up-to-64-
-  iteration replication loop on every logical-immediate *and* every
-  UBFM/SBFM/BFM (i.e. every LSL/LSR/ASR-by-immediate). Lazy 13-bit-keyed table.
-- **13. Per-EL fetch cache** (`mmu.h:43` `g_fcache` is one entry tagged with
-  `el0`): every syscall/exception/ERET misses it both ways. Two entries indexed
-  by `(c->el != 0)`.
-- **15. Second-level decode dispatch** (`decode.c` group handlers are sequential
-  if-chains; `loads_stores` tests exclusives before the far-hotter register/pair
-  forms): reorder by dynamic frequency, convert to jump-table switches where the
-  encodings allow, `cold`-mark the `undefined` paths.
-- **3. Fixed-size `memcpy` in `phys_read`/`phys_write`** (`memory.c:10,184,215`):
-  still runtime-size `memcpy`. The D-TLB fast path (#2) covers the hot path;
-  this only helps the MMIO/first-touch slow path — low value.
-- **16. Consolidate mem-access debug hooks:** largely moot — the D-TLB fast path
-  skips the `phys_read`/`phys_write` `g_dbg`/`g_watch` checks entirely, leaving
-  one predicted-not-taken `g_vawatch` branch in `mem_write`. A single
-  `unlikely(g_mem_hooks)` guard would tidy the last branch.
-
----
 
 ## Build / micro
 
@@ -145,7 +132,5 @@ Lower ROI now that `-jit`/`-pd` exist; pursue only to speed the portable path.
 
 ## Suggested order
 
-1. **#11/#12** — cheap cleanups now that the D-TLB carries them.
-2. **#14** build-flag measurement pass.
-3. Interpreter micro-ops (#9/#10/#13/#15/#3/#16/#17/#18): low priority — `-jit`
-   is the speed path; do these only to lift the portable interpreter.
+1. **#14** build-flag measurement pass.
+2. **#17** TLB-entry pack — only if a fresh profile shows `tlb[]` misses.

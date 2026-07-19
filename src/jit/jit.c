@@ -686,21 +686,20 @@ static inline u64 jit_tag(u64 pc, u64 ctx) {
  * (host = NULL). Mirrors mem_ifetch's tag discipline. */
 static int resolve_code_page(CPU *c, u64 pc, const u8 **host, u64 *pa_page) {
     u64 page = pc & ~0xfffULL;
-    if (!(g_fcache.host && g_fcache.page == page &&
-          g_fcache.el0 == (u8)(c->el == 0) &&
-          g_fcache.mmu == (u8)(c->sctlr[1] & 1))) {
+    FetchCache *f = &g_fcache[c->el == 0];
+    if (!(f->host && f->page == page &&
+          f->mmu == (u8)(c->sctlr[1] & 1))) {
         u32 w0;
         c->cur_insn_pc = pc;             /* precise IABORT ELR (cpu_step:447) */
         if (!mem_ifetch_slow(c, pc, &w0)) return 0;   /* abort taken */
-        if (!(g_fcache.host && g_fcache.page == page &&
-              g_fcache.el0 == (u8)(c->el == 0) &&
-              g_fcache.mmu == (u8)(c->sctlr[1] & 1))) {
+        if (!(f->host && f->page == page &&
+              f->mmu == (u8)(c->sctlr[1] & 1))) {
             *host = NULL;                /* executing from MMIO */
             return 1;
         }
     }
-    *host = g_fcache.host;
-    *pa_page = g_fcache.pa_page;
+    *host = f->host;
+    *pa_page = f->pa_page;
     return 1;
 }
 

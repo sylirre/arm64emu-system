@@ -171,7 +171,28 @@ void *ram_ptr(Machine *m, u64 pa, u64 len) {
     return NULL;
 }
 
-/* Host is little-endian; guest is little-endian. Direct memcpy preserves order. */
+/* Host is little-endian; guest is little-endian. Direct memcpy preserves order.
+ * Fixed-size copies for the power-of-two sizes (#3): the compiler turns each
+ * into a single load/store; odd sizes (page-split fragments) keep the runtime
+ * memcpy. */
+static inline u64 ld_le(const u8 *p, unsigned size) {
+    switch (size) {
+        case 1: return *p;
+        case 2: { u16 v; memcpy(&v, p, 2); return v; }
+        case 4: { u32 v; memcpy(&v, p, 4); return v; }
+        case 8: { u64 v; memcpy(&v, p, 8); return v; }
+        default: { u64 v = 0; memcpy(&v, p, size); return v; }
+    }
+}
+static inline void st_le(u8 *p, unsigned size, u64 v) {
+    switch (size) {
+        case 1: *p = (u8)v; break;
+        case 2: { u16 x = (u16)v; memcpy(p, &x, 2); break; }
+        case 4: { u32 x = (u32)v; memcpy(p, &x, 4); break; }
+        case 8: memcpy(p, &v, 8); break;
+        default: memcpy(p, &v, size); break;
+    }
+}
 u64 phys_read(Machine *m, u64 pa, unsigned size) {
     m->last_bus_status = BUS_OK;
     if (g_dbg >= 2 && pa >= RAM_BASE && pa < RAM_BASE + 0x40) {
@@ -179,16 +200,12 @@ u64 phys_read(Machine *m, u64 pa, unsigned size) {
         if (n++ < 40) fprintf(stderr, "[dtbrd] pa=0x%llx size=%u pc=0x%llx\n",
                               (unsigned long long)pa, size, (unsigned long long)m->cpu.cur_insn_pc);
     }
-    if (pa >= m->ram_base && pa + size <= m->ram_base + m->ram_size) {
-        u64 v = 0;
-        memcpy(&v, m->ram + (pa - m->ram_base), size);
-        return v;
-    }
+    if (pa >= m->ram_base && pa + size <= m->ram_base + m->ram_size)
+        return ld_le(m->ram + (pa - m->ram_base), size);
     if (pa >= m->flash_base && pa + size <= m->flash_base + m->flash_size) {
         u64 off = pa - m->flash_base, v = 0;
         if (flash_cfi_read(m, off, size, &v)) return v;   /* status/id/cfi mode */
-        memcpy(&v, m->flash + off, size);                 /* read-array mode */
-        return v;
+        return ld_le(m->flash + off, size);               /* read-array mode */
     }
     MMIODev *d = find_dev(m, pa);
     if (d && d->read) return d->read(d->opaque, pa - d->base, size);
@@ -212,7 +229,7 @@ void phys_write(Machine *m, u64 pa, unsigned size, u64 value) {
                 (unsigned long long)m->cpu.cur_insn_pc,
                 (unsigned long long)m->cpu.icount);
     if (pa >= m->ram_base && pa + size <= m->ram_base + m->ram_size) {
-        memcpy(m->ram + (pa - m->ram_base), &value, size);
+        st_le(m->ram + (pa - m->ram_base), size, value);
         return;
     }
     if (pa >= m->flash_base && pa + size <= m->flash_base + m->flash_size) {

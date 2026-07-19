@@ -34,30 +34,31 @@ u64 mmu_at_s1(CPU *c, u64 va, bool is_write, bool as_el0);
  * page so sequential fetches skip the TLB hash + bus dispatch. Only the page
  * *translation* is cached (a host base pointer), never decoded bytes — the
  * instruction word is read live, so decompressed/self-modifying code in the page
- * is reflected immediately. Cleared by tlb_flush_all (the same invalidation
- * contract the software TLB already relies on; the tag also carries EL0/MMU
- * state so EL or MMU-enable changes fall through to the slow path). */
+ * is reflected immediately. Cleared by tlb_flush_all/tlb_flush_page (the same
+ * invalidation contract the software TLB already relies on; the tag still
+ * carries the MMU-enable state so an SCTLR.M change falls through to the slow
+ * path). Two entries indexed by (el == 0) — #13 — so the EL0<->EL1 ping-pong
+ * of every syscall/IRQ/ERET keeps both code pages cached. */
 typedef struct {
     u64  page;   /* VA page base of the cached translation */
     u64  pa_page;/* physical page of the translation (JIT block identity) */
     u8  *host;   /* host pointer to that guest page (RAM/flash); NULL = invalid */
-    u8   el0;    /* EL0 flag of the cached translation */
     u8   mmu;    /* SCTLR_EL1.M of the cached translation */
 } FetchCache;
-extern FetchCache g_fcache;
+extern FetchCache g_fcache[2];   /* [c->el == 0] */
 
 /* Slow path: translate, refresh the fetch cache, read. Used on a cache miss. */
 bool mem_ifetch_slow(CPU *c, u64 va, u32 *insn_out);
 
 static inline bool mem_ifetch(CPU *c, u64 va, u32 *insn_out) {
     u64 page = va & ~0xfffULL;
+    FetchCache *f = &g_fcache[c->el == 0];
     /* A misaligned PC (only reachable via a bad indirect branch) takes the slow
      * path, which raises a PC-alignment fault instead of fetching rotated bytes. */
-    if (g_fcache.host && g_fcache.page == page && !(va & 3) &&
-        g_fcache.el0 == (u8)(c->el == 0) &&
-        g_fcache.mmu == (u8)(c->sctlr[1] & 1)) {
+    if (f->host && f->page == page && !(va & 3) &&
+        f->mmu == (u8)(c->sctlr[1] & 1)) {
         u32 v;
-        __builtin_memcpy(&v, g_fcache.host + (va & 0xfffULL), 4);
+        __builtin_memcpy(&v, f->host + (va & 0xfffULL), 4);
         *insn_out = v;
         return true;
     }

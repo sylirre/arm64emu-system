@@ -22,8 +22,8 @@ typedef struct {
 } TLBEntry;
 static TLBEntry tlb[TLB_ENTRIES];
 
-/* Instruction-fetch fast-path cache (single CPU, like the TLB above). */
-FetchCache g_fcache;
+/* Instruction-fetch fast-path caches, [el == 0] (single CPU, like the TLB). */
+FetchCache g_fcache[2];
 
 /* Data-access host-pointer D-TLB (layout contract in mmu.h). */
 DTlbEnt g_dtlb[DTLB_SIZE];
@@ -69,7 +69,7 @@ void tlb_flush_all(void) {
         }
     }
     lp_base = lp_mask = ~0ULL;   /* every fragment died with the generation */
-    g_fcache.host = NULL;   /* mapping may have changed; force a re-translate */
+    g_fcache[0].host = g_fcache[1].host = NULL;   /* force a re-translate */
 }
 
 u32 g_tlbi_va_seq;
@@ -83,7 +83,7 @@ void tlb_flush_page(u64 va) {
     tlb[tlb_idx(va)].valid = 0;
     DTlbEnt *de = &g_dtlb[(va >> 12) & (DTLB_SIZE - 1)];
     de->tag = 0; de->pte = 0;
-    g_fcache.host = NULL;
+    g_fcache[0].host = g_fcache[1].host = NULL;
     ++g_tlbi_va_seq;
 }
 
@@ -308,7 +308,8 @@ bool mem_read(CPU *c, u64 va, unsigned size, u64 *out) {
 }
 
 bool mem_write(CPU *c, u64 va, unsigned size, u64 val) {
-    if (g_vawatch && va < g_vawatch + 8 && va + size > g_vawatch) {
+    if (__builtin_expect(g_vawatch != 0, 0) &&    /* #16: single hook guard */
+        va < g_vawatch + 8 && va + size > g_vawatch) {
         static int vn = 0;
         if (vn++ < 400) {
             fprintf(stderr, "[vaw] W va=0x%llx size=%u val=0x%llx pc=0x%llx el=%u icount=%llu\n",
@@ -416,11 +417,11 @@ bool mem_ifetch_slow(CPU *c, u64 va, u32 *insn_out) {
     u8 *hp = host_page_ptr(c->m, pa & ~0xfffULL);
     if (hp) {
         /* Cache the page translation; bytes are still read live from *host. */
-        g_fcache.host = hp;
-        g_fcache.page = va & ~0xfffULL;
-        g_fcache.pa_page = pa & ~0xfffULL;
-        g_fcache.el0  = (u8)(c->el == 0);
-        g_fcache.mmu  = (u8)(c->sctlr[1] & 1);
+        FetchCache *f = &g_fcache[c->el == 0];
+        f->host = hp;
+        f->page = va & ~0xfffULL;
+        f->pa_page = pa & ~0xfffULL;
+        f->mmu  = (u8)(c->sctlr[1] & 1);
         __builtin_memcpy(insn_out, hp + (va & 0xfffULL), 4);
         return true;
     }
