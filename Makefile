@@ -32,7 +32,7 @@ $(BIN): $(OBJ)
 
 # Build-flag survey (TODO_OPTIMIZATIONS #14, 2026-07-19, gcc 13 x86-64):
 # -O3/-flto is ~5% faster for --jit and neutral for the interpreter, but the
-# --pd computed-goto dispatch TU regresses ~20% under it, and -flto spellings
+# predecoded tier's computed-goto dispatch TU regresses ~20% under it, and -flto spellings
 # aren't portable across gcc/clang — so the default stays plain -O2 and
 # `make OPT="-O3 -flto=8"` is the supported opt-in fast recipe. The pin below
 # keeps predecode.c at -O2 in that case (a no-op for the default build).
@@ -48,8 +48,10 @@ src/jit/predecode.o: override OPT := -O2
 clean:
 	rm -f $(OBJ) $(DEP) $(BIN) arm64emu-a64
 
+# Asm self-tests on the plain interpreter — the reference engine (--no-pd opts
+# out of the now-default predecoded tier).
 test: $(BIN)
-	@tests/run_tests.sh
+	@EMU_FLAGS=--no-pd tests/run_tests.sh
 
 # JIT suite: the asm tests under --jit, then interpreter-vs-jit consistency
 # on a deterministic firmware+Linux boot (byte-identical state checkpoints).
@@ -57,10 +59,12 @@ test-jit: $(BIN)
 	@EMU_FLAGS=--jit tests/run_tests.sh
 	@tests/run_jit_consist.sh
 
-# Same pair for the --pd interpreter tier.
+# Same pair for the predecoded tier — now the default engine, so no EMU_FLAGS
+# (run_tests.sh unset runs the default); run_pd_consist compares it against the
+# plain interpreter.
 .PHONY: test-pd
 test-pd: $(BIN)
-	@EMU_FLAGS=--pd tests/run_tests.sh
+	@tests/run_tests.sh
 	@tests/run_pd_consist.sh
 
 # The suites plus the full-boot log gate (docs/jit.md: mandatory for frontend
@@ -72,7 +76,7 @@ test-pd-full: test-pd
 	@tests/run_bootlog_gate.sh --pd
 
 # Cross-engine differential fuzzing: random blocks over the JIT's inlined
-# surface, interpreter vs --pd vs --jit (+ SLOWMEM/NOFUSE/NOVRA variants),
+# surface, interpreter vs the predecoded tier vs --jit (+ SLOWMEM/NOFUSE/NOVRA variants),
 # byte-identical HLT line and full register dump required per seed.
 # AE_SEEDS overrides the seed count (default 200); see docs/parity.md.
 .PHONY: fuzz-engines

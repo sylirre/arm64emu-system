@@ -1,8 +1,9 @@
-# Engine parity: interpreter vs `--pd` vs `--jit`
+# Engine parity: interpreter vs the predecoded tier vs `--jit`
 
 Audit of how the three execution engines stay semantically identical, what is
 allowed to differ, and how parity is verified. Snapshot date: 2026-07-19.
-Companion documents: `docs/jit.md` (JIT internals), `docs/pd.md` (`--pd` tier).
+Companion documents: `docs/jit.md` (JIT internals), `docs/pd.md` (the default
+predecoded tier).
 
 ## The structural guarantee
 
@@ -10,7 +11,7 @@ The interpreter (`cpu_step` → `exec_a64`, `src/cpu.c` / `src/decode.c` /
 `src/exec_fpsimd.c`) is the reference semantics. Both accelerated tiers are
 transcriptions of it that fall back into it:
 
-- `--pd`: anything `pd_fill` leaves `PD_GENERIC` dispatches to
+- Predecoded tier (default): anything `pd_fill` leaves `PD_GENERIC` dispatches to
   `L_GENERIC: exec_a64(c, insn)` (`src/jit/predecode.c`). The `NEXT` epilogue
   mirrors `cpu_step`'s tail exactly (icount, rare-event checks, fetch).
 - `--jit`: anything the frontend does not translate becomes
@@ -28,7 +29,7 @@ Divergence can therefore only hide in two places:
    jcache, SMC store-tracking (`g_jit_code_bitmap` + D-TLB W-bit refusal),
    ctx tags `(pc<<3) | {EL0, MMU, SP bank, FPEN}`, flush/TLB generations.
 
-`--pd` has almost no inlined-semantics surface: its native handlers are the
+The predecoded tier has almost no inlined-semantics surface: its native handlers are the
 integer/branch/load-store classes plus FP *load/stores* (with their own
 `FP_GUARD`); all FP data-processing, system and exception ops stay GENERIC.
 SP-based memory ops are deliberately GENERIC so SP-alignment faults match.
@@ -90,12 +91,12 @@ lazily by `fpsr_sync` (`src/exec_fpsimd.c`) only when the guest reads FPSR.
 | asm suite ×3 | `make test` / `make test-pd` / `make test-jit` | m1–m23 pass (`x0=0`) under every engine; values oracle-validated once via qemu-aarch64 (`-DUSERMODE` dual-mode files: m13, m19–m22) |
 | consistency checkpoints | inside `test-pd` / `test-jit` | deterministic firmware+Linux boot (harness pins `AE_RTCLOCK=0`; runtime default is the host clock), byte-identical serial + final CPU state at 1M/4M/16M/64M/300M |
 | full-boot log gate | `make test-jit-full` / `make test-pd-full` (`tests/run_bootlog_gate.sh`) | 1.6B-insn boot log identical after timestamp normalization — covers the whole boot, not just the UEFI phase the checkpoints sit in; **mandatory for frontend changes** |
-| cross-engine fuzzing | `make fuzz-engines` (`tests/run_fuzz_engines.sh` + `tests/scripts/fuzz_gen.c`) | random blocks over the inlined surface, interpreter vs `--pd` vs `--jit` vs `--jit`+SLOWMEM/NOFUSE/NOVRA; phase 1 compares the HLT line natively-executed, phase 2 stops at the exact pre-HLT icount and compares the full register dump |
+| cross-engine fuzzing | `make fuzz-engines` (`tests/run_fuzz_engines.sh` + `tests/scripts/fuzz_gen.c`) | random blocks over the inlined surface, interpreter (`--no-pd`) vs the predecoded tier vs `--jit` vs `--jit`+SLOWMEM/NOFUSE/NOVRA; phase 1 compares the HLT line natively-executed, phase 2 stops at the exact pre-HLT icount and compares the full register dump |
 | a64 backend | `make test-jit-a64` (and `AE_RUNNER=qemu-aarch64 AE_EMU=./arm64emu-a64 tests/run_fuzz_engines.sh`) | the second backend stays executable and byte-identical under qemu-user |
 | regression pins | `tests/asm/m23_jitpar.S` | the two fuzzer-found bugs below stay fixed, engine-agnostic |
 
 Bisection knobs: `AEJIT_PDMAX` / `AEJIT_SLOWMEM` / `AEJIT_NOFUSE` /
-`AEJIT_NOVRA` / `AEJIT_DUMP` (docs/jit.md) and `AEPD_MAX=N` for `--pd`
+`AEJIT_NOVRA` / `AEJIT_DUMP` (docs/jit.md) and `AEPD_MAX=N` for the predecoded tier
 (dispatch only PD ops ≤ N natively; 0 = pure interpreter).
 
 ## Case studies: what the fuzzer caught (2026-07-19)
@@ -124,7 +125,7 @@ Lesson encoded in the matrix above: the structural guarantee makes the
 target the *inlined* surface — which is exactly what `fuzz_gen.c` weights.
 A divergence report from `run_fuzz_engines.sh` names the diverging configs:
 all-JIT-configs ⇒ frontend/emit semantics; SLOWMEM-only ⇒ D-TLB/mem-run
-machinery; NOVRA-only ⇒ V-register cache; `--pd` too ⇒ shared predecode
+machinery; NOVRA-only ⇒ V-register cache; the predecoded tier too ⇒ shared predecode
 classification (`pd_fill`).
 
 ## Known observability caveat (by design)

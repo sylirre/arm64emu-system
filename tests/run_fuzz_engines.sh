@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Sylirre
 # Cross-engine differential fuzzing: random instruction blocks over the JIT's
-# inlined surface (tests/scripts/fuzz_gen.c), each image run under the
-# interpreter, --pd, --jit, and --jit with the memory/fusing/V-cache machinery
+# inlined surface (tests/scripts/fuzz_gen.c), each image run under the plain
+# interpreter, the predecoded tier, --jit, and --jit with the memory/fusing/V-cache machinery
 # individually disabled. The blocks are fault-free and device-free, so every
 # configuration must produce byte-identical output (serial + cpu_dump +
 # HLT line). A run that never reaches HLT (maxinsn hit) is a generator bug.
@@ -31,8 +31,8 @@ CFGS="pd jit jit_slowmem jit_nofuse jit_novra"
 run_cfg() { # $1=cfg $2=bin $3=outprefix
     local flags="" envs=""
     case "$1" in
-        interp)      ;;
-        pd)          flags=--pd ;;
+        interp)      flags=--no-pd ;;   # plain interpreter (opt out of the default tier)
+        pd)          ;;                  # predecoded tier is the default engine
         jit)         flags=--jit ;;
         jit_slowmem) flags=--jit; envs="AEJIT_SLOWMEM=1" ;;
         jit_nofuse)  flags=--jit; envs="AEJIT_NOFUSE=1" ;;

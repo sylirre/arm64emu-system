@@ -142,10 +142,10 @@ enum {
  * operands; PD_GENERIC when unrecognized). Pure function of the word. */
 void pd_fill(PDEnt *e, u32 insn);
 
-/* Opt-in `-pd` interpreter tier: a direct-threaded executor over the decode
- * cache. pd_step runs a slice (mirrors jit_step's contract) and returns when
- * the driver must intervene (deadline, IRQ line, halt/stop, fetch abort). */
-extern int g_pd;                   /* -pd (main.c); mutually exclusive with -jit */
+/* Default predecoded interpreter tier: a direct-threaded executor over the
+ * decode cache. pd_step runs a slice (mirrors jit_step's contract) and returns
+ * when the driver must intervene (deadline, IRQ line, halt/stop, fetch abort). */
+extern int g_pd;                   /* on by default; --no-pd off (main.c); --jit wins */
 StepResult pd_step(CPU *c, u64 slice, u64 max_insn);
 
 #endif /* A64_JIT_PREDECODE_H */

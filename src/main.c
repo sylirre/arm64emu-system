@@ -273,8 +273,8 @@ static void help(void) {
                         "differential debugging; forces the interpreter."},
         {"-j, --jit",   "Translate hot code to native on x86-64 and AArch64 "
                         "hosts. Falls back to the interpreter elsewhere."},
-        {"    --pd",    "Direct-threaded predecoded interpreter tier "
-                        "(portable). --jit wins when both are given."},
+        {"    --no-pd", "Run the plain interpreter instead of the default "
+                        "direct-threaded predecoded tier."},
         {"    --",      "Stop option parsing (arm64emu takes no positional "
                         "arguments)."},
     };
@@ -320,8 +320,8 @@ static void help(void) {
         {"AEJIT_NOVRA=1", "Disable the V-register cache."},
         {"AEJIT_NOFP16=1", "Disable FP16 native codegen (AArch64 backend)."},
         {"AEJIT_SSE=2", "Force SSE2-baseline capability answers (x86-64)."},
-        {"AEPD_MAX=N",  "Dispatch only PD ops <= N natively under --pd (0 = "
-                        "pure interpreter); the --pd analogue of AEJIT_PDMAX."},
+        {"AEPD_MAX=N",  "Dispatch only PD ops <= N natively in the predecoded "
+                        "tier (0 = pure interpreter); the analogue of AEJIT_PDMAX."},
     };
     static const char *const examples[] = {
         "arm64emu --bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd",
@@ -344,8 +344,8 @@ static void help(void) {
         "real EDK2 ArmVirtQemu firmware and Linux to an interactive shell, "
         "with the serial console on your terminal.\n\n"
         "One of --bios or --bin is required. The plain interpreter is the "
-        "reference engine; --pd and --jit are opt-in faster tiers kept "
-        "byte-identical to it.",
+        "reference engine; the predecoded tier (the default, --no-pd opts out) "
+        "and --jit are faster tiers kept byte-identical to it.",
     w, 2, 0);
 
     help_section(f, "OPTIONS");
@@ -526,7 +526,7 @@ int main(int argc, char **argv) {
             else if (!strcmp(n, "trace"))     { if (val) opt_no_value(arg); g_trace = 1; }
             else if (!strcmp(n, "reg-trace")) { if (val) opt_no_value(arg); g_rtrace = 1; }
             else if (!strcmp(n, "jit"))       { if (val) opt_no_value(arg); g_jit = 1; }
-            else if (!strcmp(n, "pd"))        { if (val) opt_no_value(arg); g_pd = 1; }
+            else if (!strcmp(n, "no-pd"))     { if (val) opt_no_value(arg); g_pd = 0; }
             else if (!strcmp(n, "net"))       { if (val) opt_no_value(arg); net_enabled = true; }
             else if (!strcmp(n, "bios"))     bios    = long_value("--bios", val, argv, argc, &i);
             else if (!strcmp(n, "kernel"))   kernel  = long_value("--kernel", val, argv, argc, &i);
@@ -598,14 +598,13 @@ int main(int argc, char **argv) {
         fprintf(stderr, "[jit] disabled: no code generator for this host\n");
         g_jit = 0;
     }
-    /* --pd: opt-in direct-threaded interpreter tier. --jit wins if both given;
-     * force it off for the per-instruction debug facilities (like --jit), which
-     * expect one exec_a64 per step. */
+    /* Direct-threaded predecoded interpreter tier: on by default (--no-pd opts
+     * out to the plain interpreter). --jit supersedes it; the per-instruction
+     * debug facilities force the plain interpreter (like --jit does), which
+     * expects one exec_a64 per step. Both fall back silently — the tier is the
+     * implicit default, so only the explicitly requested engine reports. */
     if (g_pd && g_jit) g_pd = 0;
-    if (g_pd && (g_debug_hooks || g_watch || g_vawatch)) {
-        fprintf(stderr, "[pd] disabled: per-instruction debug facility active\n");
-        g_pd = 0;
-    }
+    if (g_pd && (g_debug_hooks || g_watch || g_vawatch)) g_pd = 0;
 
     Machine m;
     machine_init(&m, ram_mb << 20);
@@ -674,8 +673,9 @@ int main(int argc, char **argv) {
     unsigned long tick_mask = 0x3ff;     /* AETICK: IRQ-poll granularity (debug) */
     if (getenv("AETICK")) tick_mask = strtoul(getenv("AETICK"), 0, 0);
     for (;;) {
-        /* --jit/--pd: one step covers up to a tick-slice of instructions, so
-         * tick on every return; the plain interpreter ticks every 1024 steps. */
+        /* --jit / predecoded tier: one step covers up to a tick-slice of
+         * instructions, so tick on every return; --no-pd (the plain
+         * interpreter) ticks every 1024 steps. */
         if (machine_tick && (g_jit || g_pd || (++ticker & tick_mask) == 0)) machine_tick(&m);
         StepResult r = g_jit ? jit_step(&m.cpu, tick_mask + 1, max_insn)
                      : g_pd  ? pd_step(&m.cpu, tick_mask + 1, max_insn)

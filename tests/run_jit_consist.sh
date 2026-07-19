@@ -36,7 +36,9 @@ POINTS=${AE_POINTS:-"1000000 4000000 16000000 64000000 300000000"}
 OUT="$(mktemp -d)"; trap 'rm -rf "$OUT"' EXIT
 pass=0; fail=0
 for N in $POINTS; do
-    ${AE_RUNNER:-} "$EMU" --bios "$BIOS" --kernel "$KERNEL" --initrd "$INITRD" \
+    # Reference = plain interpreter (--no-pd, opting out of the default
+    # predecoded tier); comparand = the JIT.
+    ${AE_RUNNER:-} "$EMU" --no-pd --bios "$BIOS" --kernel "$KERNEL" --initrd "$INITRD" \
         --append console=ttyAMA0 --max-insn "$N" \
         </dev/null >"$OUT/i.out" 2>"$OUT/i.err" &
     ${AE_RUNNER:-} "$EMU" --jit --bios "$BIOS" --kernel "$KERNEL" --initrd "$INITRD" \

@@ -546,7 +546,7 @@ static inline u64 pd_extend_reg(u64 v, unsigned option, unsigned shift) {
  * and anything pd_fill leaves PD_GENERIC runs through exec_a64 (L_GENERIC),
  * so behaviour is byte-identical to the plain interpreter by construction. */
 PDEnt g_pdcache[PD_SIZE];
-int g_pd;                          /* -pd: enable this tier (main.c) */
+int g_pd = 1;                      /* predecoded tier: on by default, --no-pd disables (main.c) */
 
 StepResult pd_step(CPU *c, u64 slice, u64 max_insn) {
     /* Entry preamble, kept in lockstep with cpu_step: deliver a pending

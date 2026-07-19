@@ -212,10 +212,11 @@ an exception-return bug (instruction-abort ELR pointing at the wrong PC).
 - **Remaining work**: the advertised instruction surface (baseline + FP16 +
   crypto + the v8.1–8.4 ecosystem extensions) is complete and
   differential-tested; what remains unimplemented is deliberately unadvertised
-  (PAuth/BTI/MTE/SVE — see `docs/todo/TODO_OPCODES.md`). Interpreter
-  **performance** is ~40 MIPS (~90 with `--pd`, ~370 with `--jit`), so a full
-  distro boot under the plain interpreter is slow (see *Performance notes*
-  below for why a decoded-instruction cache did **not** help).
+  (PAuth/BTI/MTE/SVE — see `docs/todo/TODO_OPCODES.md`). Engine
+  **performance** is ~90 MIPS by default (the predecoded interpreter tier),
+  ~40 with `--no-pd` (the plain interpreter), and ~370 with `--jit`, so a full
+  distro boot is slow (see *Performance notes* below for why a
+  decoded-instruction cache did **not** help).
 - **Devices**: **virtio-blk** (`--drive`, disk-backed rootfs), **virtio-net**
   (`--net`, user-mode NAT via the built-in usernet stack in `src/net/`: DHCP,
   DNS redirect, TCP/UDP proxying and `--netfwd` port forwarding over plain
@@ -272,9 +273,11 @@ experiment isn't blindly repeated:
   was disabled.
 - The real lever for a pure interpreter is **operand pre-decode** — caching a
   fully decoded form (opcode id + pre-extracted operands) dispatched via a dense
-  `switch`, so a hit skips operand extraction too, not just classification. That,
-  or accepting the current speed, is the path forward; a function-pointer decode
-  cache is not.
+  `switch`, so a hit skips operand extraction too, not just classification. That
+  is exactly the **predecoded tier**, now the default engine (`--no-pd` opts out
+  to the plain interpreter): a direct-threaded executor over such a cache,
+  ~2.46× the plain interpreter. See [docs/pd.md](docs/pd.md). A function-pointer
+  decode cache, by contrast, is not the path forward.
 
 ## License
 

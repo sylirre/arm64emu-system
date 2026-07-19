@@ -22,9 +22,13 @@ set -u
 # instruction-count clock so the two engines' logs match past the checkpoints.
 # Overridable for debugging.
 export AE_RTCLOCK="${AE_RTCLOCK:-0}"
+# Mode label selects the comparand engine; the reference run is always the
+# plain interpreter (--no-pd). The predecoded tier is the default engine, so
+# its comparand flag is empty.
 FLAG="${1:---jit}"
 case "$FLAG" in
-    --jit|--pd) ;;
+    --jit) CMP=--jit ;;
+    --pd)  CMP= ;;
     *) echo "usage: $0 [--jit|--pd]"; exit 2 ;;
 esac
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -39,10 +43,10 @@ MAXI=${AE_MAXINSN:-1600000000}
 [ -r "$KERNEL" ] && [ -r "$INITRD" ] || { echo "SKIP: no kernel/initrd"; exit 0; }
 
 OUT="$(mktemp -d)"; trap 'rm -rf "$OUT"' EXIT
-${AE_RUNNER:-} "$EMU" --bios "$BIOS" --kernel "$KERNEL" --initrd "$INITRD" \
+${AE_RUNNER:-} "$EMU" --no-pd --bios "$BIOS" --kernel "$KERNEL" --initrd "$INITRD" \
     --append console=ttyAMA0 --max-insn "$MAXI" \
     </dev/null >"$OUT/i.out" 2>"$OUT/i.err" &
-${AE_RUNNER:-} "$EMU" $FLAG --bios "$BIOS" --kernel "$KERNEL" --initrd "$INITRD" \
+${AE_RUNNER:-} "$EMU" $CMP --bios "$BIOS" --kernel "$KERNEL" --initrd "$INITRD" \
     --append console=ttyAMA0 --max-insn "$MAXI" \
     </dev/null >"$OUT/j.out" 2>"$OUT/j.err" &
 wait

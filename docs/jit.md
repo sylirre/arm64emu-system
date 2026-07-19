@@ -184,6 +184,6 @@ checkpoint under qemu-user — the standing guard that keeps the second
 backend executable, not merely compilable.
 
 `make fuzz-engines` runs the cross-engine differential fuzzer over the
-inlined surface (random blocks, interpreter vs `--pd` vs `--jit` and its
-SLOWMEM/NOFUSE/NOVRA variants). See `docs/parity.md` for the full parity
+inlined surface (random blocks, interpreter vs the predecoded tier vs `--jit`
+and its SLOWMEM/NOFUSE/NOVRA variants). See `docs/parity.md` for the full parity
 audit, verification matrix, and the bugs this fuzzer has caught.
