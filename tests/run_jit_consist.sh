@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Sylirre
 # JIT-vs-interpreter consistency: run the same deterministic boot to several
-# exact -maxinsn stopping points (the JIT's interpret-tail makes the stop
+# exact --max-insn stopping points (the JIT's interpret-tail makes the stop
 # instruction-exact) and require byte-identical serial output AND final CPU
 # state (registers, sp, pc, el, nzcv, daif, icount).
 #
@@ -32,11 +32,11 @@ POINTS=${AE_POINTS:-"1000000 4000000 16000000 64000000 300000000"}
 OUT="$(mktemp -d)"; trap 'rm -rf "$OUT"' EXIT
 pass=0; fail=0
 for N in $POINTS; do
-    ${AE_RUNNER:-} "$EMU" -bios "$BIOS" -kernel "$KERNEL" -initrd "$INITRD" \
-        -append console=ttyAMA0 -maxinsn "$N" \
+    ${AE_RUNNER:-} "$EMU" --bios "$BIOS" --kernel "$KERNEL" --initrd "$INITRD" \
+        --append console=ttyAMA0 --max-insn "$N" \
         </dev/null >"$OUT/i.out" 2>"$OUT/i.err" &
-    ${AE_RUNNER:-} "$EMU" -jit -bios "$BIOS" -kernel "$KERNEL" -initrd "$INITRD" \
-        -append console=ttyAMA0 -maxinsn "$N" \
+    ${AE_RUNNER:-} "$EMU" --jit --bios "$BIOS" --kernel "$KERNEL" --initrd "$INITRD" \
+        --append console=ttyAMA0 --max-insn "$N" \
         </dev/null >"$OUT/j.out" 2>"$OUT/j.err" &
     wait
     if cmp -s "$OUT/i.out" "$OUT/j.out" && cmp -s "$OUT/i.err" "$OUT/j.err"; then

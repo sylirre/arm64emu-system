@@ -3,7 +3,7 @@
 # Copyright 2026 Sylirre
 # Cross-engine differential fuzzing: random instruction blocks over the JIT's
 # inlined surface (tests/scripts/fuzz_gen.c), each image run under the
-# interpreter, -pd, -jit, and -jit with the memory/fusing/V-cache machinery
+# interpreter, --pd, --jit, and --jit with the memory/fusing/V-cache machinery
 # individually disabled. The blocks are fault-free and device-free, so every
 # configuration must produce byte-identical output (serial + cpu_dump +
 # HLT line). A run that never reaches HLT (maxinsn hit) is a generator bug.
@@ -28,14 +28,14 @@ run_cfg() { # $1=cfg $2=bin $3=outprefix
     local flags="" envs=""
     case "$1" in
         interp)      ;;
-        pd)          flags=-pd ;;
-        jit)         flags=-jit ;;
-        jit_slowmem) flags=-jit; envs="AEJIT_SLOWMEM=1" ;;
-        jit_nofuse)  flags=-jit; envs="AEJIT_NOFUSE=1" ;;
-        jit_novra)   flags=-jit; envs="AEJIT_NOVRA=1" ;;
+        pd)          flags=--pd ;;
+        jit)         flags=--jit ;;
+        jit_slowmem) flags=--jit; envs="AEJIT_SLOWMEM=1" ;;
+        jit_nofuse)  flags=--jit; envs="AEJIT_NOFUSE=1" ;;
+        jit_novra)   flags=--jit; envs="AEJIT_NOVRA=1" ;;
     esac
-    env $envs ${AE_RUNNER:-} "$EMU" $flags -bin "$2@0x40000000" \
-        -maxinsn "${MAXI_OVERRIDE:-200000}" \
+    env $envs ${AE_RUNNER:-} "$EMU" $flags --bin "$2@0x40000000" \
+        --max-insn "${MAXI_OVERRIDE:-200000}" \
         </dev/null >"$3.out" 2>"$3.err"
 }
 
@@ -54,9 +54,9 @@ for seed in $(seq 1 "$SEEDS"); do
         cmp -s "$OUT/i.out" "$OUT/j.out" && cmp -s "$OUT/i.err" "$OUT/j.err" \
             || bad="$bad $cfg"
     done
-    # Phase 2: -bin HLT stops print no cpu_dump, so the HLT line above only
+    # Phase 2: --bin HLT stops print no cpu_dump, so the HLT line above only
     # compares x0/icount. Stop every config at the exact pre-HLT icount via
-    # -maxinsn (instruction-exact in all engines) and compare the full
+    # --max-insn (instruction-exact in all engines) and compare the full
     # register dump. The accelerated engines' interpret-tail covers the last
     # ~256 insns, so this phase checks all GPRs/pc/nzcv while phase 1 keeps
     # the tail natively executed.

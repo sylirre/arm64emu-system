@@ -13,15 +13,15 @@
 # tick cadence (timer-IRQ delivery points) may legitimately shift register
 # state this deep in a boot (docs/jit.md "Known, documented deviations").
 #
-# Usage: run_bootlog_gate.sh [-jit|-pd]        (default -jit)
+# Usage: run_bootlog_gate.sh [--jit|--pd]        (default --jit)
 # Env: AE_BIOS, AE_KERNEL, AE_INITRD override the images;
 #      AE_MAXINSN overrides the stopping point (default 1600000000);
 #      AE_EMU / AE_RUNNER: alternate binary and launcher prefix.
 set -u
-FLAG="${1:--jit}"
+FLAG="${1:---jit}"
 case "$FLAG" in
-    -jit|-pd) ;;
-    *) echo "usage: $0 [-jit|-pd]"; exit 2 ;;
+    --jit|--pd) ;;
+    *) echo "usage: $0 [--jit|--pd]"; exit 2 ;;
 esac
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EMU="${AE_EMU:-$ROOT/arm64emu}"
@@ -35,11 +35,11 @@ MAXI=${AE_MAXINSN:-1600000000}
 [ -r "$KERNEL" ] && [ -r "$INITRD" ] || { echo "SKIP: no kernel/initrd"; exit 0; }
 
 OUT="$(mktemp -d)"; trap 'rm -rf "$OUT"' EXIT
-${AE_RUNNER:-} "$EMU" -bios "$BIOS" -kernel "$KERNEL" -initrd "$INITRD" \
-    -append console=ttyAMA0 -maxinsn "$MAXI" \
+${AE_RUNNER:-} "$EMU" --bios "$BIOS" --kernel "$KERNEL" --initrd "$INITRD" \
+    --append console=ttyAMA0 --max-insn "$MAXI" \
     </dev/null >"$OUT/i.out" 2>"$OUT/i.err" &
-${AE_RUNNER:-} "$EMU" $FLAG -bios "$BIOS" -kernel "$KERNEL" -initrd "$INITRD" \
-    -append console=ttyAMA0 -maxinsn "$MAXI" \
+${AE_RUNNER:-} "$EMU" $FLAG --bios "$BIOS" --kernel "$KERNEL" --initrd "$INITRD" \
+    --append console=ttyAMA0 --max-insn "$MAXI" \
     </dev/null >"$OUT/j.out" 2>"$OUT/j.err" &
 wait
 

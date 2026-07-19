@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Sylirre
-# End-to-end network smoke test for the usernet backend (-net).
+# End-to-end network smoke test for the usernet backend (--net).
 #
 # Boots a BusyBox test guest (see tests/net/) against a host-local HTTP
 # server, so everything except the optional DNS lookup is hermetic:
@@ -9,8 +9,8 @@
 #                     10 parallel fetches, half-close, refused-port RST,
 #                     200-query UDP flood (flow expiry)
 #   phase "upload"    guest pushes 2MB to a host nc listener (md5-checked)
-#   phase "nc_listen" -netfwd tcp: five host connections into the guest
-#   phase "udp_echo"  -netfwd udp: datagram in, reply out the rule socket
+#   phase "nc_listen" --netfwd tcp: five host connections into the guest
+#   phase "udp_echo"  --netfwd udp: datagram in, reply out the rule socket
 #
 # Requirements (see tests/net/mk_guest_initrd.sh):
 #   AE_KERNEL      aarch64 EFI-stub kernel   (default: ~/Image.gz)
@@ -52,8 +52,8 @@ curl -sf "http://127.0.0.1:$HTTP_PORT/hello.txt" >/dev/null 2>&1 || \
 
 boot() {  # boot PHASE AEARG [extra emulator args...] -> log on stdout
     local phase=$1 aearg=$2; shift 2
-    timeout 420 "$EMU" $EMU_FLAGS -bios "$BIOS" -kernel "$KERNEL" -initrd "$IRD" \
-        -net -append "aetest=$phase aearg=$aearg" "$@" </dev/null 2>&1
+    timeout 420 "$EMU" $EMU_FLAGS --bios "$BIOS" --kernel "$KERNEL" --initrd "$IRD" \
+        --net --append "aetest=$phase aearg=$aearg" "$@" </dev/null 2>&1
 }
 
 expect() {  # expect LOG MARKER...
@@ -93,7 +93,7 @@ rm -f "$LOG" "$UPF"
 
 note "phase hostfwd tcp"
 LOG=$(mktemp)
-boot nc_listen 8080 -netfwd "tcp:$FWD_TCP:8080" >"$LOG" &
+boot nc_listen 8080 --netfwd "tcp:$FWD_TCP:8080" >"$LOG" &
 BOOTPID=$!
 for i in $(seq 1 240); do
     grep -aq "AETEST:nc_listen:READY" "$LOG" && break; sleep 1
@@ -117,7 +117,7 @@ rm -f "$LOG"
 
 note "phase hostfwd udp"
 LOG=$(mktemp)
-boot udp_echo 8081 -netfwd "udp:$FWD_UDP:8081" >"$LOG" &
+boot udp_echo 8081 --netfwd "udp:$FWD_UDP:8081" >"$LOG" &
 BOOTPID=$!
 for i in $(seq 1 240); do
     grep -aq "AETEST:udp_echo:READY" "$LOG" && break; sleep 1

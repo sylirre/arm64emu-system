@@ -24,39 +24,45 @@ make                       # builds ./arm64emu  (C11, libc only)
 make test                  # runs the assembly self-tests
 
 # Boot the EDK2 firmware to the UEFI shell (serial -> your terminal):
-./arm64emu -bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd
+./arm64emu --bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd
 
-# Boot Linux via fw_cfg (the EDK2 -kernel path, no disk needed):
-./arm64emu -bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
-           -kernel Image -initrd initramfs \
-           -append "console=ttyAMA0 earlycon=pl011,0x9000000"
+# Boot Linux via fw_cfg (the EDK2 --kernel path, no disk needed):
+./arm64emu --bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
+           --kernel Image --initrd initramfs \
+           --append "console=ttyAMA0 earlycon=pl011,0x9000000"
 
 # Share host directories into the guest over virtio-9p (repeatable):
-./arm64emu -bios .../QEMU_EFI.fd -kernel Image -initrd initramfs \
-           -virtfs /path/to/project,tag=proj \
-           -virtfs /srv/data,tag=data,ro
+./arm64emu --bios .../QEMU_EFI.fd --kernel Image --initrd initramfs \
+           --virtfs /path/to/project,tag=proj \
+           --virtfs /srv/data,tag=data,ro
 
 # virtio-console on hvc0, so the guest terminal size tracks the host window:
-./arm64emu -bios .../QEMU_EFI.fd -kernel Image -initrd initramfs \
-           -console virtio \
-           -append "console=hvc0 earlycon=pl011,0x9000000"
+./arm64emu --bios .../QEMU_EFI.fd --kernel Image --initrd initramfs \
+           --console virtio \
+           --append "console=hvc0 earlycon=pl011,0x9000000"
 ```
 
-Useful flags: `-m <MB>` RAM size, `-dtb FILE` supply a device tree,
-`-drive IMG[,ro]` attach a virtio-blk disk (repeatable; `ro` opens the image
-read-only and advertises VIRTIO_BLK_F_RO), `-net` user-mode networking
-(`-netfwd tcp|udp:HOST_PORT:GUEST_PORT` forwards host ports to the guest),
-`-virtfs DIR[,tag=TAG][,ro]` share a host directory over virtio-9p
-(repeatable), `-console pl011|virtio` pick the console device (default `pl011`),
-`-bin FILE@ADDR` load a flat binary (bare-metal tests), `-d`
-per-instruction trace, `-rt` register trace, `-maxinsn N` stop after N
-instructions.
+Useful flags: `-m/--memory MB` RAM size, `--dtb FILE` supply a device tree,
+`--drive IMG[,ro]` attach a virtio-blk disk (repeatable; `ro` opens the image
+read-only and advertises VIRTIO_BLK_F_RO), `--net` user-mode networking
+(`--netfwd tcp|udp:HOST_PORT:GUEST_PORT` forwards host ports to the guest),
+`--virtfs DIR[,tag=TAG][,ro]` share a host directory over virtio-9p
+(repeatable), `--console pl011|virtio` pick the console device (default `pl011`),
+`--bin FILE[@ADDR]` load a flat binary (bare-metal tests), `-d/--trace`
+per-instruction trace, `--reg-trace` register trace, `--max-insn N` stop after N
+instructions. `arm64emu --help` is the full reference, reflowed to your
+terminal; options are GNU-style (`--long`, `--opt=VAL`, short `-h -v -m -d -j`).
 
-**Host directory sharing (`-virtfs`).** Each `-virtfs DIR` exports a host
+> **Breaking change (CLI).** Options used to be QEMU-style single-dash words.
+> Every option is now spelled `--word`; besides the extra dash, `-maxinsn` is
+> now `--max-insn`, `-m` is `--memory` (the `-m` short form still works),
+> `-d` is `--trace` (short `-d` still works), and `-rt` is `--reg-trace`.
+
+**Host directory sharing (`--virtfs`).** Each `--virtfs DIR` exports a host
 directory to the guest as a 9P2000.L filesystem on its own virtio-mmio slot.
 `tag=` names the mount (default: the directory's basename); `ro` makes it
 read-only (default is read-write, changes pass straight through to the host).
-Repeat `-virtfs` for multiple independent shares. Mount inside the guest with:
+Repeat `--virtfs` for multiple independent shares. Mount inside the guest with:
 
 ```sh
 mount -t 9p -o trans=virtio,version=9p2000.L proj /mnt/proj
@@ -67,9 +73,9 @@ The guest kernel needs 9p-over-virtio support (`CONFIG_NET_9P`,
 loadable modules. `..` is confined to the share root; symlinks inside a share
 are followed by the host, so a share is a convenience, not a security boundary.
 
-**Console (`-console pl011|virtio`).** The default `pl011` is the PL011 UART
+**Console (`--console pl011|virtio`).** The default `pl011` is the PL011 UART
 (`ttyAMA0`): a byte-pipe serial line, unchanged and fully deterministic.
-`-console virtio` additionally attaches a **virtio-console** on its own
+`--console virtio` additionally attaches a **virtio-console** on its own
 virtio-mmio slot, exposed to the guest as `hvc0`. It advertises
 `VIRTIO_CONSOLE_F_SIZE`, so the guest terminal size follows the host window
 automatically — the initial columns/rows and every later host resize (SIGWINCH)
@@ -83,18 +89,18 @@ consoles sharing one terminal (the PL011 for firmware/GRUB/`earlycon`, and hvc0
 for the OS), so host keystrokes are routed to **whichever console last produced
 output** ("input follows output"): firmware and GRUB menus stay on the PL011, and
 once the guest writes its console to hvc0 your typing (and the window size) follow
-there. This means `-console virtio` never leaves you unable to type, wherever the
+there. This means `--console virtio` never leaves you unable to type, wherever the
 guest's login ends up.
 
 Getting the login onto hvc0 depends on how you boot:
 
-- **`-kernel` path**: the emulator adds `console=hvc0` to the kernel cmdline for you
-  when `-console virtio` is set, so the login lands on hvc0 with no extra flags
+- **`--kernel` path**: the emulator adds `console=hvc0` to the kernel cmdline for you
+  when `--console virtio` is set, so the login lands on hvc0 with no extra flags
   (keep `earlycon=pl011,0x9000000` for early output before the driver probes). This
   works for a guest that has its own root filesystem (an installed disk image, or a
   kernel+initramfs that mounts a real root).
-- **`-drive` ISO / GRUB boot** (e.g. the stock Alpine live ISO): the kernel cmdline
-  comes from the ISO's bootloader, not from `-append`, and the emulator can't
+- **`--drive` ISO / GRUB boot** (e.g. the stock Alpine live ISO): the kernel cmdline
+  comes from the ISO's bootloader, not from `--append`, and the emulator can't
   override a `console=` baked into it. The Alpine ISO uses
   `console=tty0 console=ttyAMA0`, so its login is on `ttyAMA0` — you can still type
   (input follows it). To move the login to hvc0, edit the GRUB entry at the menu:
@@ -103,9 +109,9 @@ Getting the login onto hvc0 depends on how you boot:
   `console=ttyAMA0` — *append*, don't replace it: the live ISO's boot-media
   discovery relies on it, and dropping it makes early init fail (`switch_root:
   can't execute '/sbin/init'`). For the same reason, booting a live ISO's kernel
-  directly via `-kernel` won't work — its root overlay is assembled only under its
+  directly via `--kernel` won't work — its root overlay is assembled only under its
   own GRUB boot. (An installed system with a normal root filesystem has neither
-  restriction: just use the `-kernel` path, where `console=hvc0` is auto-added.)
+  restriction: just use the `--kernel` path, where `console=hvc0` is auto-added.)
 
 Note that host resize events make `virtio` mode as non-deterministic as any
 keyboard input; the default `pl011` path is untouched.
@@ -130,8 +136,8 @@ src/
   exception.c   exception entry/return (VBAR vectors, ESR/FAR/ELR/SPSR, ERET)
   memory.c      physical bus: RAM + NOR-flash CFI command set + MMIO dispatch
   tty.c         raw-terminal serial console via termios
-  devices/      gicv2, timer, pl011, pl031, psci, fwcfg, virtio_blk (-drive),
-                virtio_net (-net), virtio_9p (-virtfs), virtio_console (-console)
+  devices/      gicv2, timer, pl011, pl031, psci, fwcfg, virtio_blk (--drive),
+                virtio_net (--net), virtio_9p (--virtfs), virtio_console (--console)
   fdt/virt.dts  device tree (QEMU virt tree; compiled to virt_dtb.h, embedded)
 tests/          self-checking assembly tests + QEMU differential helpers
 ```
@@ -201,14 +207,14 @@ an exception-return bug (instruction-abort ELR pointing at the wrong PC).
   crypto + the v8.1–8.4 ecosystem extensions) is complete and
   differential-tested; what remains unimplemented is deliberately unadvertised
   (PAuth/BTI/MTE/SVE — see `docs/todo/TODO_OPCODES.md`). Interpreter
-  **performance** is ~40 MIPS (~90 with `-pd`, ~370 with `-jit`), so a full
+  **performance** is ~40 MIPS (~90 with `--pd`, ~370 with `--jit`), so a full
   distro boot under the plain interpreter is slow (see *Performance notes*
   below for why a decoded-instruction cache did **not** help).
-- **Devices**: **virtio-blk** (`-drive`, disk-backed rootfs), **virtio-net**
-  (`-net`, user-mode NAT via the built-in usernet stack in `src/net/`: DHCP,
-  DNS redirect, TCP/UDP proxying and `-netfwd` port forwarding over plain
+- **Devices**: **virtio-blk** (`--drive`, disk-backed rootfs), **virtio-net**
+  (`--net`, user-mode NAT via the built-in usernet stack in `src/net/`: DHCP,
+  DNS redirect, TCP/UDP proxying and `--netfwd` port forwarding over plain
   host sockets — IPv4 only, no TAP/TUN, no external libraries), **virtio-9p**
-  (`-virtfs`, host directory sharing), and **virtio-console** (`-console
+  (`--virtfs`, host directory sharing), and **virtio-console** (`--console
   virtio`, host-tracking `hvc0` terminal size) are implemented over
   virtio-mmio, alongside the fw_cfg initramfs rootfs.
 
@@ -223,7 +229,7 @@ The interpreter runs at **~40 MIPS** (firmware boot prefix, `-O2`, single core).
 A pure interpreter spends its time on the per-instruction work itself — fetch,
 operand extraction, the ALU/memory operation — not on classifying the opcode.
 
-### JIT (`-jit`, off by default)
+### JIT (`--jit`, off by default)
 
 An opt-in basic-block JIT (ported from the arm64chroot sibling project)
 translates guest code to host x86-64 (an AArch64 backend is included,

@@ -31,8 +31,8 @@ $(BIN): $(OBJ)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 # Build-flag survey (TODO_OPTIMIZATIONS #14, 2026-07-19, gcc 13 x86-64):
-# -O3/-flto is ~5% faster for -jit and neutral for the interpreter, but the
-# -pd computed-goto dispatch TU regresses ~20% under it, and -flto spellings
+# -O3/-flto is ~5% faster for --jit and neutral for the interpreter, but the
+# --pd computed-goto dispatch TU regresses ~20% under it, and -flto spellings
 # aren't portable across gcc/clang — so the default stays plain -O2 and
 # `make OPT="-O3 -flto=8"` is the supported opt-in fast recipe. The pin below
 # keeps predecode.c at -O2 in that case (a no-op for the default build).
@@ -51,28 +51,28 @@ clean:
 test: $(BIN)
 	@tests/run_tests.sh
 
-# JIT suite: the asm tests under -jit, then interpreter-vs-jit consistency
+# JIT suite: the asm tests under --jit, then interpreter-vs-jit consistency
 # on a deterministic firmware+Linux boot (byte-identical state checkpoints).
 test-jit: $(BIN)
-	@EMU_FLAGS=-jit tests/run_tests.sh
+	@EMU_FLAGS=--jit tests/run_tests.sh
 	@tests/run_jit_consist.sh
 
-# Same pair for the -pd interpreter tier.
+# Same pair for the --pd interpreter tier.
 .PHONY: test-pd
 test-pd: $(BIN)
-	@EMU_FLAGS=-pd tests/run_tests.sh
+	@EMU_FLAGS=--pd tests/run_tests.sh
 	@tests/run_pd_consist.sh
 
 # The suites plus the full-boot log gate (docs/jit.md: mandatory for frontend
 # changes — the consistency checkpoints all sit inside the UEFI phase).
 .PHONY: test-jit-full test-pd-full
 test-jit-full: test-jit
-	@tests/run_bootlog_gate.sh -jit
+	@tests/run_bootlog_gate.sh --jit
 test-pd-full: test-pd
-	@tests/run_bootlog_gate.sh -pd
+	@tests/run_bootlog_gate.sh --pd
 
 # Cross-engine differential fuzzing: random blocks over the JIT's inlined
-# surface, interpreter vs -pd vs -jit (+ SLOWMEM/NOFUSE/NOVRA variants),
+# surface, interpreter vs --pd vs --jit (+ SLOWMEM/NOFUSE/NOVRA variants),
 # byte-identical HLT line and full register dump required per seed.
 # AE_SEEDS overrides the seed count (default 200); see docs/parity.md.
 .PHONY: fuzz-engines
@@ -80,7 +80,7 @@ fuzz-engines: $(BIN)
 	@tests/run_fuzz_engines.sh
 
 # AArch64-backend validation without ARM hardware: cross-build a static
-# aarch64 binary (clang + lld + Debian cross libc) and run the -jit suite
+# aarch64 binary (clang + lld + Debian cross libc) and run the --jit suite
 # plus one consistency checkpoint under qemu-user emulation. Skips politely
 # when the cross pieces are absent.
 A64_SYSROOT = /usr/aarch64-linux-gnu
@@ -93,5 +93,5 @@ test-jit-a64:
 	    || { echo "SKIP: qemu-aarch64 / clang / aarch64 cross libc missing"; exit 0; }
 	$(A64_CC) $(CSTD) $(OPT) $(WARN) $(DEFS) -Isrc -fno-math-errno \
 	    -o arm64emu-a64 $(SRC) -lm
-	AE_RUNNER=qemu-aarch64 AE_EMU=$(CURDIR)/arm64emu-a64 EMU_FLAGS=-jit tests/run_tests.sh
+	AE_RUNNER=qemu-aarch64 AE_EMU=$(CURDIR)/arm64emu-a64 EMU_FLAGS=--jit tests/run_tests.sh
 	AE_RUNNER=qemu-aarch64 AE_EMU=$(CURDIR)/arm64emu-a64 AE_POINTS=4000000 tests/run_jit_consist.sh

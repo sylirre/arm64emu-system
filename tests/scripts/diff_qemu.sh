@@ -12,7 +12,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="$(mktemp -d)"; trap 'rm -rf "$OUT"' EXIT
 
 # Our emulator trace: "<pc>: <insn> ..."
-"$ROOT/arm64emu" -bin "$BIN@$LOAD" -d -maxinsn "$MAX" 2>"$OUT/mine.raw"
+"$ROOT/arm64emu" --bin "$BIN@$LOAD" --trace --max-insn "$MAX" 2>"$OUT/mine.raw"
 grep -oE '^[0-9a-f]{16}: [0-9a-f]{8}' "$OUT/mine.raw" | awk '{print $1}' > "$OUT/mine.pc"
 
 # QEMU trace via -d in_asm,nochain -singlestep. (-kernel loads flat bin at RAM base.)

@@ -1,4 +1,4 @@
-# The JIT (`-jit`)
+# The JIT (`--jit`)
 
 Opt-in, off by default. Translates guest basic blocks to host native code
 (x86-64 first-class; the AArch64 backend passes the full suite and
@@ -10,7 +10,7 @@ calling `exec_a64`, and `make test-jit` requires interpreter-vs-JIT
 byte-identical CPU state on deterministic boots.
 
 Measured on the firmware+Linux boot used by `tests/run_jit_consist.sh`:
-~36 MIPS interpreted, ~370 MIPS with `-jit` (≈10×). Steady state runs
+~36 MIPS interpreted, ~370 MIPS with `--jit` (≈10×). Steady state runs
 >99.9% of instructions natively; the remaining helper residue
 (~0.03%) is IC IVAU, TLBI and cold sysreg moves.
 
@@ -87,7 +87,7 @@ runs interpreted until control leaves it.
 icount deadline one tick-slice ahead. The block-entry safepoint in
 generated code checks `env->interrupt` and the deadline, so chained hot
 loops return to the run loop at `machine_tick` cadence; IRQ lines raised
-mid-slice by synchronous MMIO are re-checked between blocks. `-maxinsn`
+mid-slice by synchronous MMIO are re-checked between blocks. `--max-insn`
 is exact: the deadline is capped a block short of the limit and the last
 stretch single-steps through `cpu_step`.
 
@@ -134,9 +134,9 @@ decode.c remains authoritative for it.
   tail run to the block end (≤128 instructions) — architecturally
   permitted without IC IVAU+ISB, and unobservable for cross-page SMC
   (module loads, kernel alternatives, DMA), which is exact.
-- **Debug facilities force the interpreter**: `-d`, `-rt`, AEPROF,
+- **Debug facilities force the interpreter**: `--trace`, `--reg-trace`, AEPROF,
   AERING, AETPC, AECOV, AEWATCH, AEVAW (per-instruction hooks; the
-  watchpoints also need every access on the slow path). `-jit` prints a
+  watchpoints also need every access on the slow path). `--jit` prints a
   notice and clears itself.
 
 ## Knobs (debug/bisection, all off by default)
@@ -154,21 +154,21 @@ decode.c remains authoritative for it.
 
 ## Verification
 
-`make test-jit` runs the m1–m12 suite under `-jit` (the SIMD/crypto
+`make test-jit` runs the m1–m12 suite under `--jit` (the SIMD/crypto
 batteries were built as QEMU differentials, so they double as the FP
 oracle) and `tests/run_jit_consist.sh`: the deterministic firmware+Linux
 boot stopped at 1M/4M/16M/64M/300M instructions, requiring byte-identical
 serial output *and* final CPU state between modes. Divergence playbook:
-binary-search `-maxinsn` for the first divergent state (both modes are
+binary-search `--max-insn` for the first divergent state (both modes are
 deterministic; beware hangs — use `timeout`), then `AEJIT_PDMAX` to
 isolate the instruction class, `AEJIT_SLOWMEM/NOFUSE/NOVRA` to isolate
 machinery, `AEJIT_DUMP` + objdump to read the block. The full gates also
-include `net_smoke.sh` under `EMU_FLAGS=-jit` and an Alpine ISO boot to
+include `net_smoke.sh` under `EMU_FLAGS=--jit` and an Alpine ISO boot to
 the login prompt.
 
 One gate is mandatory for any frontend change: the **full 1.6B-insn boot
 log compared against the interpreter's** — scripted as
-`tests/run_bootlog_gate.sh` (`make test-jit-full`; also takes `-pd`). It
+`tests/run_bootlog_gate.sh` (`make test-jit-full`; also takes `--pd`). It
 strips the `[ ts ]` printk prefixes and the clock-derived audit stamps;
 anything still differing fails the gate. The consistency
 checkpoints all sit inside the UEFI phase, and a translation bug in an
@@ -182,6 +182,6 @@ checkpoint under qemu-user — the standing guard that keeps the second
 backend executable, not merely compilable.
 
 `make fuzz-engines` runs the cross-engine differential fuzzer over the
-inlined surface (random blocks, interpreter vs `-pd` vs `-jit` and its
+inlined surface (random blocks, interpreter vs `--pd` vs `--jit` and its
 SLOWMEM/NOFUSE/NOVRA variants). See `docs/parity.md` for the full parity
 audit, verification matrix, and the bugs this fuzzer has caught.

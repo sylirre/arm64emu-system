@@ -2,17 +2,17 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Sylirre
 # pd-vs-interpreter consistency: run the same deterministic boot to several
-# exact -maxinsn stopping points (the JIT's interpret-tail makes the stop
+# exact --max-insn stopping points (the JIT's interpret-tail makes the stop
 # instruction-exact) and require byte-identical serial output AND final CPU
 # state (registers, sp, pc, el, nzcv, daif, icount).
 #
 # Timer-driven IRQ *delivery points* can differ between the modes (the
-# interpreter polls devices every 1024 loop iterations, -pd at its slice
+# interpreter polls devices every 1024 loop iterations, --pd at its slice
 # boundaries), so a guest that reads the timer very late in a long boot may
 # print different timestamps while both runs stay individually deterministic
 # (see docs/pd.md). The windows below are empirically interleave-identical;
 # a divergence here means a bug in a native pd handler. Bisect: binary-search
-# -maxinsn for the first divergent state, then AEPD_MAX=N (dispatch only PD
+# --max-insn for the first divergent state, then AEPD_MAX=N (dispatch only PD
 # ops <= N natively, the rest through exec_a64; 0 = pure interpreter) to
 # isolate the handler class. FP data-processing and system/exception ops are
 # always PD_GENERIC, so the suspects are the native integer, branch and
@@ -36,11 +36,11 @@ POINTS=${AE_POINTS:-"1000000 4000000 16000000 64000000 300000000"}
 OUT="$(mktemp -d)"; trap 'rm -rf "$OUT"' EXIT
 pass=0; fail=0
 for N in $POINTS; do
-    ${AE_RUNNER:-} "$EMU" -bios "$BIOS" -kernel "$KERNEL" -initrd "$INITRD" \
-        -append console=ttyAMA0 -maxinsn "$N" \
+    ${AE_RUNNER:-} "$EMU" --bios "$BIOS" --kernel "$KERNEL" --initrd "$INITRD" \
+        --append console=ttyAMA0 --max-insn "$N" \
         </dev/null >"$OUT/i.out" 2>"$OUT/i.err" &
-    ${AE_RUNNER:-} "$EMU" -pd -bios "$BIOS" -kernel "$KERNEL" -initrd "$INITRD" \
-        -append console=ttyAMA0 -maxinsn "$N" \
+    ${AE_RUNNER:-} "$EMU" --pd --bios "$BIOS" --kernel "$KERNEL" --initrd "$INITRD" \
+        --append console=ttyAMA0 --max-insn "$N" \
         </dev/null >"$OUT/j.out" 2>"$OUT/j.err" &
     wait
     if cmp -s "$OUT/i.out" "$OUT/j.out" && cmp -s "$OUT/i.err" "$OUT/j.err"; then
