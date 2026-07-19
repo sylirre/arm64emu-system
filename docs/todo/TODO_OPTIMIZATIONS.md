@@ -11,7 +11,7 @@ interpreter (portable reference), **`-pd`** (computed-goto direct-threaded, ~2.4
 the interpreter's per-instruction loop entirely, so the interpreter micro-ops
 below (#9/#10/#13/#15) now speed only the portable interpreter and the `exec_a64`
 helper fallback — **for raw speed, use `-jit`.** The device/system items
-(#4/#6/#7/#8/#11/#12) sit outside the per-instruction path and benefit every tier.
+(#4/#11/#12) sit outside the per-instruction path and benefit every tier.
 
 **Measure before/after every item.** Callgrind
 (`valgrind --tool=callgrind ./arm64emu -bios … -maxinsn 300000000`), `AEPROF=1`
@@ -34,6 +34,18 @@ in-guest `dd if=/dev/zero of=/dev/null bs=1M` (DC ZVA path) and
 - **Basic-block predecode** — the "viable evolution" the *Tried and rejected*
   section pointed at — shipped as the **`-pd`** and **`-jit`** tiers, which also
   supersede **#5** (batched run loop). See `docs/pd.md`, `docs/jit.md`.
+- **#6 — split tick cadence** (2026-07-19): `machine_tick` keeps the timer/RTC
+  compares tick-fine but runs the syscall-bound host-IO polls (UART/console
+  `read(2)`, net `poll(2)`) every 65536 insns (`AEIOTICK` overrides;
+  `machine_wait_for_event` forces a poll so WFI-idle latency is unchanged).
+- **#7 — timer deadline compare** (2026-07-19): `timer_update` caches the next
+  fire count (phys domain, `ARMTimer.deadline`); the per-tick `timer_check` is
+  one compare. Every CNT* write already funnels through `timer_update`
+  (`sysreg.c` CRn==14 hook), so the cache cannot go stale.
+- **#8 — GIC early-out** (2026-07-19): `gic_set_irq` returns before `gic_update`
+  when `pending` didn't move (the raw line isn't a `gic_best` input), killing
+  the 2×/tick 256-entry rescan. Boot deltas for the batch: interp −4.4%,
+  `-pd` −6.4%, `-jit` −16% (220→262 MIPS).
 
 ---
 
@@ -47,26 +59,6 @@ Staged fix: (1) decode VA-form TLBIs and invalidate just the one direct-mapped
 entry (+ `g_fcache` if its page matches); (2) tag entries with ASID + nG and stop
 flushing on TTBR0 writes so context switches retain entries. Correctness-
 sensitive — validate with the AECOV differential method + `m2_mmu.S`/`m6_cow.S`.
-
-### 6. Split tick cadence — stop syscalling every 1024 instructions
-`machine_tick` (`platform.c:149-150`) still runs `pl011_rx_poll` → `read(2)` and
-`virtio_net_poll` → `poll(2)` every `tick_mask+1 = 1024` instructions even when
-there is never input. Keep `timer_update` on the fine tick (pure arithmetic in
-deterministic mode); move UART/net polling to a coarse cadence (~128k–1M insns).
-Trivial, and it helps all tiers.
-
-### 7. Timer: deadline compare instead of periodic re-evaluation
-`timer_update` (`timer.c:42`) recomputes both counters and calls `gic_set_irq`
-twice every tick. The deadline helpers already exist (`timer_next_deadline_ticks`,
-used for the WFI fast-forward) — cache `next_deadline` and reduce the periodic
-work to one `icount >= deadline` compare, recomputed on any CNT* write.
-
-### 8. GIC: stop scanning 256 IRQs on every update
-`gic_set_irq` (`gicv2.c:33`) unconditionally calls `gic_update` → `gic_best`
-(linear scan of 256 entries across five bool arrays) — 2×/tick from the timer,
-plus every IAR/EOIR. Add an early-out when neither `pending` nor `line` changed;
-replace the bool arrays with `u32` bitmaps scanned via `__builtin_ctz`; cache the
-current best.
 
 ### 11. DC ZVA: one translation + host memset
 `sys_op` (`sysreg.c:40`) still does ZVA as 8 × `mem_write(8B)`. Each write now
@@ -129,14 +121,16 @@ Lower ROI now that `-jit`/`-pd` exist; pursue only to speed the portable path.
   re-decode (tag-check + cache footprint outweighed the cheap decode). Its viable
   evolution — basic-block predecode — is now the **`-pd`** and **`-jit`** tiers,
   so this idea is settled: block-granular, not per-PC.
+- **GIC bool-array → bitmap conversion (the second half of #8): not needed.**
+  After the `gic_set_irq` early-out, `gic_best`/`gic_update`/`timer_update`/
+  `machine_tick` all fall below 0.28% of a 300M-insn `-pd` boot (callgrind,
+  2026-07-19) — there is nothing left for a `u32`-bitmap `gic_best` to win.
 
 ## Suggested order
 
-1. **Device/system, all-tier, low-risk:** #6 (tick syscalls) + #8 (GIC early-out)
-   + #7 (timer deadline) — one afternoon.
-2. **#4** (TLBI by-VA / ASID) — the biggest remaining TLB-miss reducer;
+1. **#4** (TLBI by-VA / ASID) — the biggest remaining TLB-miss reducer;
    correctness-sensitive, differential-test it.
-3. **#11/#12** — cheap cleanups now that the D-TLB carries them.
-4. **#14** build-flag measurement pass.
-5. Interpreter micro-ops (#9/#10/#13/#15/#3/#16/#17/#18): low priority — `-jit`
+2. **#11/#12** — cheap cleanups now that the D-TLB carries them.
+3. **#14** build-flag measurement pass.
+4. Interpreter micro-ops (#9/#10/#13/#15/#3/#16/#17/#18): low priority — `-jit`
    is the speed path; do these only to lift the portable interpreter.

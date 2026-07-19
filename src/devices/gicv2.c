@@ -32,12 +32,16 @@ void gic_update(GIC *g) {
 
 void gic_set_irq(GIC *g, int intid, int level) {
     if (intid < 0 || intid >= GIC_NUM_IRQS) return;
-    if (g->cfg_edge[intid]) {
-        if (level && !g->line[intid]) g->pending[intid] = true;   /* rising edge */
-    } else {
-        g->pending[intid] = level != 0;                            /* level */
-    }
-    g->line[intid] = level != 0;
+    bool lv = level != 0;
+    /* edge: a rising edge pends; level: pending follows the line */
+    bool pend = g->cfg_edge[intid] ? (g->pending[intid] || (lv && !g->line[intid]))
+                                   : lv;
+    g->line[intid] = lv;
+    /* The timer/devices re-assert an unchanged level every tick: when pending
+     * didn't move, no gic_update input changed (the raw line isn't one), so
+     * skip the 256-entry eligibility rescan. */
+    if (pend == g->pending[intid]) return;
+    g->pending[intid] = pend;
     gic_update(g);
 }
 

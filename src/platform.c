@@ -132,11 +132,26 @@ void machine_reset(Machine *m, u64 entry, unsigned reset_el) {
     if (m->fwcfg) phys_write_blk(m, RAM_BASE, virt_dtb, virt_dtb_len);
 
     cpu_reset(&m->cpu, entry, reset_el);
+    m->io_poll_due = 0;               /* icount restarted: don't starve the IO polls */
+    if (m->timer) m->timer->deadline = 0;   /* re-evaluate against the reset regs */
 }
 
 void machine_tick(Machine *m) {
-    if (m->timer) timer_update(m);
-    if (m->rtc)   pl031_update(m);
+    if (m->timer) timer_check(m);
+    if (m->rtc)   pl031_update(m);   /* pure arithmetic (deterministic mode): stays tick-fine */
+    /* The host-IO polls below are syscall-bound (stdin read(2), net poll(2))
+     * and need none of the per-tick precision the timer/RTC compares above
+     * get: run them on a much coarser instruction cadence.
+     * machine_wait_for_event zeroes io_poll_due so WFI-idle input/net latency
+     * is unchanged. AEIOTICK overrides the cadence (insns; bisection knob). */
+    if (m->cpu.icount < m->io_poll_due) return;
+    static u64 io_interval;
+    if (!io_interval) {
+        const char *s = getenv("AEIOTICK");
+        io_interval = s ? strtoull(s, 0, 0) : 65536;
+        if (!io_interval) io_interval = 1;
+    }
+    m->io_poll_due = m->cpu.icount + io_interval;
     /* Route host keyboard input to the console the guest is actually using:
      * "input follows output". console_active_virtio tracks which console last
      * produced output (set on each device's TX). So firmware/GRUB/earlycon and a
@@ -174,6 +189,7 @@ void machine_wait_for_event(Machine *m) {
         if (!c->irq_line && !has_input && dl != ~0ULL)
             c->timer_skip += dl;     /* fast-forward to the nearest timer deadline */
 
+        m->io_poll_due = 0;          /* idle: keep host-IO latency tick-fine */
         machine_tick(m);             /* re-evaluate the timer line at the new count */
         if (c->irq_line || has_input) c->halted = false;
         return;
@@ -189,6 +205,7 @@ void machine_wait_for_event(Machine *m) {
     struct pollfd pfd = { .fd = STDIN_FILENO, .events = POLLIN };
     int r = isatty(STDIN_FILENO) ? poll(&pfd, 1, timeout_ms) : (timeout_ms ? (poll(NULL,0,timeout_ms),0) : 0);
 
+    m->io_poll_due = 0;              /* idle: keep host-IO latency tick-fine */
     machine_tick(m);
     if (c->irq_line || r > 0) c->halted = false;
 }

@@ -43,9 +43,13 @@ void gic_set_irq(GIC *g, int intid, int level);
 void gic_update(GIC *g);
 
 /* ---- generic timer ---- */
-typedef struct ARMTimer { CPU *cpu; GIC *gic; } ARMTimer;
+typedef struct ARMTimer {
+    CPU *cpu; GIC *gic;
+    u64 deadline;   /* cached next-fire count (phys domain), ~0 = none armed */
+} ARMTimer;
 ARMTimer *gtimer_create(Machine *m);
 void timer_update(Machine *m);
+void timer_check(Machine *m);   /* per-tick: one compare, full update when due */
 u64  timer_next_deadline_ns(Machine *m);     /* host-ns until next fire, or ~0 */
 u64  timer_next_deadline_ticks(Machine *m);  /* instructions until next fire, or ~0 */
 

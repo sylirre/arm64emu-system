@@ -115,6 +115,10 @@ typedef struct Machine {
     NetFwd net_fwds[16];          /* -netfwd rules */
     int    n_net_fwds;
 
+    u64 io_poll_due;              /* icount at which machine_tick next runs the
+                                   * host-IO polls (UART/console read, net poll);
+                                   * 0 forces a poll on the next tick */
+
     BusStatus last_bus_status;    /* set by phys_* on fault */
 } Machine;
 

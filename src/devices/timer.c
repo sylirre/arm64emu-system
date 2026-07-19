@@ -39,6 +39,21 @@ static bool fires(u64 ctl, u64 count, u64 cval) {
     return (ctl & 1) && !(ctl & 2) && (count >= cval);   /* ENABLE && !IMASK && reached */
 }
 
+/* Next count (phys domain) at which an armed, unmasked timer fires; ~0 if
+ * none. The virtual cval is shifted by cntvoff into the phys domain (a wrap
+ * of that sum only makes the deadline conservative — an early re-evaluation,
+ * never a missed one... cntvoff is 0 without EL2 anyway). */
+static u64 deadline_count(CPU *c) {
+    u64 best = ~0ULL;
+    if ((c->cntp_ctl & 1) && !(c->cntp_ctl & 2))
+        best = c->cntp_cval;
+    if ((c->cntv_ctl & 1) && !(c->cntv_ctl & 2)) {
+        u64 d = c->cntv_cval + (u64)c->cntvoff;
+        if (d < best) best = d;
+    }
+    return best;
+}
+
 void timer_update(Machine *m) {
     CPU *c = &m->cpu;
     u64 pc = gt_count(c, false), vc = gt_count(c, true);
@@ -53,6 +68,20 @@ void timer_update(Machine *m) {
     }
     gic_set_irq(m->gic, INTID_TIMER_PHYS, pf);
     gic_set_irq(m->gic, INTID_TIMER_VIRT, vf);
+    /* Refresh the cached deadline. While a line stays asserted the deadline
+     * is already reached, so timer_check keeps re-running the full update
+     * each tick (today's behavior) until the guest reprograms the timer. */
+    if (m->timer) m->timer->deadline = deadline_count(c);
+}
+
+/* The per-tick path: a single compare against the cached deadline. The cache
+ * cannot go stale: every CNT* register write funnels through timer_update
+ * (sysreg.c do_msr re-runs it on any CRn==14 write), and nothing else changes
+ * the fire condition — the count only moves forward. Fires at the same tick
+ * boundary the periodic re-evaluation did, so deterministic runs and the
+ * interpreter-vs-jit/pd consistency checkpoints are unchanged. */
+void timer_check(Machine *m) {
+    if (gt_count(&m->cpu, false) >= m->timer->deadline) timer_update(m);
 }
 
 u64 timer_next_deadline_ns(Machine *m) {
