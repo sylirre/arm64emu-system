@@ -189,8 +189,9 @@ void ring_dump(void);      /* print the recent-instruction ring buffer */
 extern u64 g_watch;        /* env AEWATCH: log writes to [g_watch, g_watch+8) */
 extern int g_debug_hooks;  /* OR of all per-step debug facilities (perf guard) */
 extern int g_iabort_log;   /* env AEIABORT: log instruction aborts */
-extern int g_rtclock;      /* env AE_RTCLOCK: drive the generic timer from the host
-                              clock instead of the deterministic instruction count */
+extern int g_rtclock;      /* env AE_RTCLOCK: drive the generic timer + RTC from the
+                              host clock (default); AE_RTCLOCK=0 selects the
+                              deterministic instruction-count clock (debug) */
 extern u64 g_vawatch;      /* env AEVAW: log writes whose range covers this VA */
 extern int g_systrace;     /* env AESYS: trace mm syscalls (mmap/brk/munmap/...) */
 void systrace_svc(CPU *c); /* record an in-flight mm syscall for return logging */

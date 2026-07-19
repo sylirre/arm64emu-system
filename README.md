@@ -122,6 +122,12 @@ Debug/bring-up env vars (all off by default, no runtime cost when unset):
 `AEWATCH=0xADDR` watch writes to an address, `AEIABORT=1` log instruction aborts,
 `AECOV=file` coverage-divergence finder (see below).
 
+The generic timer and PL031 RTC follow the host wall clock by default. Set
+`AE_RTCLOCK=0` to switch both to a deterministic instruction-count clock and a
+fixed RTC epoch, giving a bit-for-bit reproducible boot — the mode the test gates
+(`make test`, `test-pd`, `test-jit`, `fuzz-engines`) pin for cross-engine
+comparison.
+
 ## Architecture
 
 ```
@@ -237,7 +243,8 @@ validated under qemu-user emulation but untested on real hardware):
 **~370 MIPS (≈10×)** on the Linux-boot workload, >99.9% of instructions
 native in steady state. The interpreter stays the
 default and the reference — `make test-jit` requires byte-identical CPU
-state between the modes on deterministic boots. Design, full-system
+state between the modes on a deterministic-clock boot (`AE_RTCLOCK=0`, which the
+gate pins). Design, full-system
 coherence (SMC store-tracking, block/context keying, IRQ safepoints) and
 debug knobs: [docs/jit.md](docs/jit.md).
 

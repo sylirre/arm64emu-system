@@ -280,8 +280,9 @@ static void help(void) {
     };
     static const struct help_def env_tune[] = {
         {"AEJIT_MB=N",  "JIT code-cache size in MiB. Default 32, max 128."},
-        {"AE_RTCLOCK=1", "Drive the generic timer and the RTC from the host "
-                        "clock instead of the deterministic instruction count."},
+        {"AE_RTCLOCK=0", "Deterministic clock: drive the generic timer and the "
+                        "RTC from the retired-instruction count (reproducible "
+                        "boots) instead of the host clock (the default)."},
         {"AETICK=N",    "IRQ-poll granularity mask for the run loop. Default "
                         "0x3ff (poll every 1024 steps)."},
     };

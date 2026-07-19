@@ -12,6 +12,10 @@
 #      AE_EMU / AE_RUNNER as in run_tests.sh, CC for the generator build,
 #      AE_FUZZ_KEEP=dir to keep failing images (default tests/fuzz_failures).
 set -u
+# The runtime default is the host wall clock (AE_RTCLOCK=1); pin the deterministic
+# instruction-count clock so every engine config is byte-identical even when a
+# fuzzed block reads CNTPCT/CNTVCT. Overridable for debugging.
+export AE_RTCLOCK="${AE_RTCLOCK:-0}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EMU="${AE_EMU:-$ROOT/arm64emu}"
 SEEDS=${AE_SEEDS:-200}

@@ -3,6 +3,10 @@
 # Copyright 2026 Sylirre
 # Build and run the assembly self-tests against the emulator.
 set -u
+# The runtime default is the host wall clock (AE_RTCLOCK=1); pin the deterministic
+# instruction-count clock here so the gates stay reproducible (m23_jitpar asserts
+# CNTVCT advances 1 tick/insn). Overridable for debugging.
+export AE_RTCLOCK="${AE_RTCLOCK:-0}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # AE_EMU: alternate emulator binary; AE_RUNNER: launcher prefix (e.g.
 # qemu-aarch64 for the cross-built AArch64-backend binary).

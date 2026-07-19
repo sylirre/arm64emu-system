@@ -1706,8 +1706,10 @@ static int fe_insn(IRBlock *ir, const PDEnt *e, u64 pc) {
                      * gt_count = icount + timer_skip [- cntvoff]). Memory
                      * icount mid-block excludes the natively-retired batch,
                      * and ir->ninsns here is exactly that batch, so the sum
-                     * is the exact architectural count — with -rt the JIT
-                     * is off anyway, but keep the helper authoritative. */
+                     * is the exact architectural count. In real-time mode
+                     * (AE_RTCLOCK=1, the default) the JIT stays on but this
+                     * inline is skipped, so the read routes through the
+                     * authoritative host-clock helper instead. */
                     unsigned op2 = (insn >> 5) & 7;
                     if (rt != 31) {
                         if (op2 == 0) {                  /* CNTFRQ_EL0 */

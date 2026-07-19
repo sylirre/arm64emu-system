@@ -53,7 +53,9 @@ if both `--pd` and `--jit` are given.
 byte-identical against the plain interpreter at 1M/4M/16M/64M/300M via
 `tests/run_pd_consist.sh` (`make test-pd`), across the full asm suite under
 `EMU_FLAGS=--pd`, by the full-boot log gate (`make test-pd-full`), and by the
-cross-engine fuzzer (`make fuzz-engines`) — see `docs/parity.md`.
+cross-engine fuzzer (`make fuzz-engines`) — see `docs/parity.md`. These gates pin
+the deterministic clock (`AE_RTCLOCK=0`); the runtime default is now the host wall
+clock (`AE_RTCLOCK=1`).
 Like `--jit`, the only accepted deviation is tick-cadence: timer-IRQ delivery
 points can shift printk timestamps deep in a long boot (console *content* stays
 identical). Forced off when a per-instruction debug facility is active

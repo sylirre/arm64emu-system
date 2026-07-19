@@ -18,6 +18,10 @@
 #      AE_MAXINSN overrides the stopping point (default 1600000000);
 #      AE_EMU / AE_RUNNER: alternate binary and launcher prefix.
 set -u
+# The runtime default is the host wall clock (AE_RTCLOCK=1); pin the deterministic
+# instruction-count clock so the two engines' logs match past the checkpoints.
+# Overridable for debugging.
+export AE_RTCLOCK="${AE_RTCLOCK:-0}"
 FLAG="${1:---jit}"
 case "$FLAG" in
     --jit|--pd) ;;

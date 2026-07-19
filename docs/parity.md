@@ -88,7 +88,7 @@ lazily by `fpsr_sync` (`src/exec_fpsimd.c`) only when the guest reads FPSR.
 | Gate | Command | What it proves |
 |------|---------|----------------|
 | asm suite ×3 | `make test` / `make test-pd` / `make test-jit` | m1–m23 pass (`x0=0`) under every engine; values oracle-validated once via qemu-aarch64 (`-DUSERMODE` dual-mode files: m13, m19–m22) |
-| consistency checkpoints | inside `test-pd` / `test-jit` | deterministic firmware+Linux boot, byte-identical serial + final CPU state at 1M/4M/16M/64M/300M |
+| consistency checkpoints | inside `test-pd` / `test-jit` | deterministic firmware+Linux boot (harness pins `AE_RTCLOCK=0`; runtime default is the host clock), byte-identical serial + final CPU state at 1M/4M/16M/64M/300M |
 | full-boot log gate | `make test-jit-full` / `make test-pd-full` (`tests/run_bootlog_gate.sh`) | 1.6B-insn boot log identical after timestamp normalization — covers the whole boot, not just the UEFI phase the checkpoints sit in; **mandatory for frontend changes** |
 | cross-engine fuzzing | `make fuzz-engines` (`tests/run_fuzz_engines.sh` + `tests/scripts/fuzz_gen.c`) | random blocks over the inlined surface, interpreter vs `--pd` vs `--jit` vs `--jit`+SLOWMEM/NOFUSE/NOVRA; phase 1 compares the HLT line natively-executed, phase 2 stops at the exact pre-HLT icount and compares the full register dump |
 | a64 backend | `make test-jit-a64` (and `AE_RUNNER=qemu-aarch64 AE_EMU=./arm64emu-a64 tests/run_fuzz_engines.sh`) | the second backend stays executable and byte-identical under qemu-user |

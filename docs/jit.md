@@ -7,7 +7,8 @@ byte-identical consistency checkpoints under qemu-user emulation —
 The interpreter remains the default execution mode and the reference
 semantics: anything the translator does not handle inline executes by
 calling `exec_a64`, and `make test-jit` requires interpreter-vs-JIT
-byte-identical CPU state on deterministic boots.
+byte-identical CPU state on a deterministic-clock boot (`AE_RTCLOCK=0`, which
+the gate pins; the runtime default is now the host wall clock).
 
 Measured on the firmware+Linux boot used by `tests/run_jit_consist.sh`:
 ~36 MIPS interpreted, ~370 MIPS with `--jit` (≈10×). Steady state runs
@@ -157,7 +158,8 @@ decode.c remains authoritative for it.
 `make test-jit` runs the m1–m12 suite under `--jit` (the SIMD/crypto
 batteries were built as QEMU differentials, so they double as the FP
 oracle) and `tests/run_jit_consist.sh`: the deterministic firmware+Linux
-boot stopped at 1M/4M/16M/64M/300M instructions, requiring byte-identical
+boot (the harness pins `AE_RTCLOCK=0`) stopped at 1M/4M/16M/64M/300M
+instructions, requiring byte-identical
 serial output *and* final CPU state between modes. Divergence playbook:
 binary-search `--max-insn` for the first divergent state (both modes are
 deterministic; beware hangs — use `timeout`), then `AEJIT_PDMAX` to

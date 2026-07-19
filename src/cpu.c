@@ -17,7 +17,7 @@ u64 g_tpc = 0;       /* env AETPC: dump state whenever pc == this (debug) */
 int g_ring = 0;      /* env AERING: record a ring buffer of recent steps */
 u64 g_watch = 0;     /* env AEWATCH: log writes to [g_watch, g_watch+8) */
 int g_iabort_log = 0;/* env AEIABORT: log instruction aborts (debug) */
-int g_rtclock = 0;   /* env AE_RTCLOCK: host-clock timer (default = deterministic) */
+int g_rtclock = 1;   /* env AE_RTCLOCK: host-clock timer (default); 0 = deterministic (debug) */
 u64 g_vawatch = 0;   /* env AEVAW: log writes whose range covers this VA (debug) */
 int g_systrace = 0;  /* env AESYS: trace mm syscalls (mmap/brk/munmap/...) (debug) */
 

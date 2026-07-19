@@ -2,13 +2,13 @@
 /* Copyright 2026 Sylirre */
 /* ARM architected generic timer.
  *
- * By default the counter is driven by the retired-instruction count, NOT the
- * host wall clock: one CNTFRQ tick per executed instruction, plus a fast-forward
- * accumulated while the CPU is halted in WFI (see machine_wait_for_event). This
- * makes the timer fully deterministic -- the timer IRQ lands at the identical
- * instruction boundary on every run -- so timing-dependent boot failures become
- * reproducible. Set AE_RTCLOCK=1 to revert to the host monotonic clock (natural
- * wall-clock guest time, but non-reproducible IRQ placement). */
+ * By default the counter is driven by the host monotonic clock (natural
+ * wall-clock guest time). Set AE_RTCLOCK=0 for the deterministic mode, where the
+ * counter is driven by the retired-instruction count instead: one CNTFRQ tick per
+ * executed instruction, plus a fast-forward accumulated while the CPU is halted in
+ * WFI (see machine_wait_for_event). That makes the timer fully deterministic -- the
+ * timer IRQ lands at the identical instruction boundary on every run -- so
+ * timing-dependent boot failures become reproducible. The test gates run this way. */
 #include "../devices.h"
 #include <stdlib.h>
 #include <stdio.h>

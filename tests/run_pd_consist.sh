@@ -21,6 +21,10 @@
 # Env: AE_BIOS, AE_KERNEL, AE_INITRD override the images;
 #      AE_POINTS overrides the checkpoint list.
 set -u
+# The runtime default is the host wall clock (AE_RTCLOCK=1); pin the deterministic
+# instruction-count clock so cross-engine state is reproducible and byte-identical.
+# Overridable for debugging.
+export AE_RTCLOCK="${AE_RTCLOCK:-0}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # AE_EMU / AE_RUNNER: alternate binary and launcher prefix (qemu-aarch64).
 EMU="${AE_EMU:-$ROOT/arm64emu}"

@@ -169,7 +169,7 @@ void machine_wait_for_event(Machine *m) {
     CPU *c = &m->cpu;
 
     if (!g_rtclock) {
-        /* Deterministic timer: the counter only advances as instructions retire,
+        /* Deterministic timer (AE_RTCLOCK=0 opt-out): the counter only advances as instructions retire,
          * so while halted in WFI it would never reach the next deadline. Jump the
          * virtual clock forward by exactly the ticks remaining to the nearest
          * armed timer, so the IRQ fires at a fixed, reproducible icount. */
@@ -195,7 +195,7 @@ void machine_wait_for_event(Machine *m) {
         return;
     }
 
-    /* Real-time mode (AE_RTCLOCK): pace against the host monotonic clock. */
+    /* Real-time mode (AE_RTCLOCK=1, the default): pace against the host monotonic clock. */
     u64 dl = timer_next_deadline_ns(m);
     int timeout_ms;
     if (dl == 0) timeout_ms = 0;
