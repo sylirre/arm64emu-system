@@ -1,17 +1,16 @@
 # arm64emu — Optimization Opportunities (TODO)
 
-Survey of the interpreter/device hot paths begun 2026-07-03; **cleaned
-2026-07-18** to drop what has landed and reframe the rest around the tiered
-executor that now exists. Item numbers are preserved. Line references drift as
-the tree moves — treat them as hints.
+Survey of the interpreter/device hot paths begun 2026-07-03; cleaned
+2026-07-18; **closed out 2026-07-19** — every item has landed or carries a
+measured rejection/deferral below. Item numbers are preserved. Line references
+drift as the tree moves — treat them as hints.
 
 **Perf landscape:** the emulator now has three execution tiers — the plain
 interpreter (portable reference), **`-pd`** (computed-goto direct-threaded, ~2.46×,
 ~90 MIPS), and **`-jit`** (native codegen, ~10×, ~370 MIPS). `-jit`/`-pd` bypass
 the interpreter's per-instruction loop entirely — **for raw speed, use
 `-jit`.** Everything the survey found has now landed or been measured and
-rejected (see below); only the #14 build-flag pass and the #17 re-profile
-remain open.
+rejected/deferred (see below).
 
 **Measure before/after every item.** Callgrind
 (`valgrind --tool=callgrind ./arm64emu -bios … -maxinsn 300000000`), `AEPROF=1`
@@ -77,7 +76,6 @@ in-guest `dd if=/dev/zero of=/dev/null bs=1M` (DC ZVA path) and
   bit-exact vs the old code (KATs + 2M random inputs, both polys, all
   widths). No boot delta expected or seen: initramfs boots touch no
   CRC32C-checksummed filesystem; the win applies to ext4/btrfs guests.
-
 - **#9/#10/#13/#15/#3/#16 — interpreter micro batch** (2026-07-19):
   add_with_carry skips the NZCV math when S==0 (#9); decode_bitmasks is
   memoized behind a 13-bit immN:immr:imms table, 32-bit = truncated 64-bit
@@ -90,6 +88,16 @@ in-guest `dd if=/dev/zero of=/dev/null bs=1M` (DC ZVA path) and
   power-of-two sizes (#3); mem_write's vawatch check sits behind one
   `unlikely` guard (#16). Boot deltas: interp −4.6%, `-pd` −3.9%,
   `-jit` −1.4%.
+- **#14 — build flags: measured, default stays `-O2`** (2026-07-19, gcc 13
+  x86-64, deterministic 1.6G-insn boot): `-O3` alone is *worse* for the
+  interpreter (+6%) and neutral elsewhere; `-O2 -flto` neutral; `-mtune=native`
+  neutral; `-O3 -flto` is ≈5% faster for `-jit` but ≈20% *slower* for `-pd`
+  (LTO/O3 mangles the computed-goto dispatch loop). Adopted: default stays
+  plain `-O2` (portable, and `-flto` spellings differ between gcc and clang —
+  the a64 cross target reuses `$(OPT)`); `make OPT="-O3 -flto=8"` is the
+  supported opt-in fast recipe, with `predecode.o` pinned to `-O2` in the
+  Makefile so the `-pd` regression can't happen. PGO not pursued (two-phase
+  build for a workload-specific gain).
 
 ---
 
@@ -108,23 +116,18 @@ TTBR0-write refills as hot.
 
 ---
 
-
-## Build / micro
-
-- **14. Build flags** (`Makefile`, still `-O2`, no LTO): measure `-O3`; `-flto`
-  (the per-instruction path crosses main/cpu/decode/mmu/memory TU boundaries);
-  `-march=native` (already the FMA fast path) / `-mtune=native`; PGO. Pure
-  measurement work.
-- **17. TLB entry shape** (`mmu.c:14` `TLBEntry` is ~25 B → 32 B padded): pack to
-  16 B (flags in low bits) to fit two per cache line; fold with a re-profile.
----
-
 ## Tried and rejected — do not repeat
 
 - **Per-PC decoded-instruction cache: measured 5–6% *slower*** than plain
   re-decode (tag-check + cache footprint outweighed the cheap decode). Its viable
   evolution — basic-block predecode — is now the **`-pd`** and **`-jit`** tiers,
   so this idea is settled: block-granular, not per-PC.
+- **#17 TLB-entry pack (32 B → 16 B): rejected on cachegrind evidence.**
+  A 300M-insn `-pd` boot with `--cache-sim=yes` (2026-07-19) shows a 0.011%
+  D1 read-miss rate overall, with all of `mmu.c` contributing 55.8k D1 read
+  misses total — the TLB array's working set is already cache-resident
+  (post-#4 retention keeps it hot), so halving the entry cannot buy anything
+  measurable.
 - **GIC bool-array → bitmap conversion (the second half of #8): not needed.**
   After the `gic_set_irq` early-out, `gic_best`/`gic_update`/`timer_update`/
   `machine_tick` all fall below 0.28% of a 300M-insn `-pd` boot (callgrind,
@@ -132,5 +135,5 @@ TTBR0-write refills as hot.
 
 ## Suggested order
 
-1. **#14** build-flag measurement pass.
-2. **#17** TLB-entry pack — only if a fresh profile shows `tlb[]` misses.
+Nothing left: every survey item has landed or carries a measured rejection/
+deferral above. New optimization work should start from a fresh profile.

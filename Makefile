@@ -30,6 +30,16 @@ all: $(BIN)
 $(BIN): $(OBJ)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
+# Build-flag survey (TODO_OPTIMIZATIONS #14, 2026-07-19, gcc 13 x86-64):
+# -O3/-flto is ~5% faster for -jit and neutral for the interpreter, but the
+# -pd computed-goto dispatch TU regresses ~20% under it, and -flto spellings
+# aren't portable across gcc/clang — so the default stays plain -O2 and
+# `make OPT="-O3 -flto=8"` is the supported opt-in fast recipe. The pin below
+# keeps predecode.c at -O2 in that case (a no-op for the default build).
+# -mtune=native measured neutral; PGO not pursued (adds a two-phase build for
+# a workload-specific gain).
+src/jit/predecode.o: override OPT := -O2
+
 %.o: %.c
 	$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
 
