@@ -41,6 +41,8 @@ for src in "$ASM"/*.S; do
     case "$name" in
         *_vcon) run=(${AE_RUNNER:-} "$EMU" ${EMU_FLAGS:-} --bios "$bin" --console virtio --max-insn 100000) ;;
         *_rtc)  run=(${AE_RUNNER:-} "$EMU" ${EMU_FLAGS:-} --bios "$bin" --max-insn 100000) ;;   # pl031 needs platform_build
+        *_gic|*_timer|*_irq|*_uart)
+                run=(${AE_RUNNER:-} "$EMU" ${EMU_FLAGS:-} --bios "$bin" --max-insn 100000) ;;   # gic/timer/uart need platform_build
         *)      run=(${AE_RUNNER:-} "$EMU" ${EMU_FLAGS:-} --bin "$bin@$LOAD" --max-insn 100000) ;;
     esac
     res="$("${run[@]}" 2>&1 | grep -oE 'x0=0x[0-9a-f]+' | head -1)"
