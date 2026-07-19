@@ -431,7 +431,18 @@ bool mem_ifetch_slow(CPU *c, u64 va, u32 *insn_out) {
     return true;
 }
 
+/* One D-TLB probe + one 16-byte host copy when the access stays inside a
+ * page. The fallback two-halves path is observably identical for the cases
+ * the fast path skips (page-crossing, MMIO, watchpoint runs — the D-TLB is
+ * empty then — and JIT code pages, whose W bit the D-TLB refuses): both
+ * orders write/read the same bytes and fault at the same split VA. */
 bool mem_read128(CPU *c, u64 va, V128 *out) {
+    u64 off = va & 0xfffULL;
+    DTlbEnt *de = dtlb_ent(va);
+    if (off <= 0xff0 && de->tag == dtlb_tag(c, va) && (de->pte & DTLB_R)) {
+        __builtin_memcpy(out, (const u8 *)(uintptr_t)(de->pte & ~0xfffULL) + off, 16);
+        return true;
+    }
     u64 lo, hi;
     if (!mem_read(c, va, 8, &lo)) return false;
     if (!mem_read(c, va + 8, 8, &hi)) return false;
@@ -440,6 +451,12 @@ bool mem_read128(CPU *c, u64 va, V128 *out) {
 }
 
 bool mem_write128(CPU *c, u64 va, const V128 *val) {
+    u64 off = va & 0xfffULL;
+    DTlbEnt *de = dtlb_ent(va);
+    if (off <= 0xff0 && de->tag == dtlb_tag(c, va) && (de->pte & DTLB_W)) {
+        __builtin_memcpy((u8 *)(uintptr_t)(de->pte & ~0xfffULL) + off, val, 16);
+        return true;
+    }
     if (!mem_write(c, va, 8, val->d[0])) return false;
     if (!mem_write(c, va + 8, 8, val->d[1])) return false;
     return true;

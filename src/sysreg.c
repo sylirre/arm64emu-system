@@ -5,6 +5,7 @@
 #include "sysreg.h"
 #include "mmu.h"
 #include <stdio.h>
+#include <string.h>
 
 /* Generic-timer hooks, provided by timer.c (M3). */
 u64 gt_count(CPU *c, bool virt) __attribute__((weak));
@@ -72,6 +73,16 @@ static void sys_op(CPU *c, u32 insn, unsigned op1, unsigned CRn, unsigned CRm,
         }
         if (CRm == 4 && op2 == 1) {                      /* DC ZVA: zero 64 bytes */
             u64 base = reg_x(c, Rt) & ~63ULL;
+            /* One D-TLB probe covers the line (64-aligned: never crosses a
+             * page): writable-RAM hit -> host memset. Miss/deny falls back
+             * to the 8x mem_write loop, which handles faults, MMIO,
+             * watchpoint runs (the D-TLB is empty then) and JIT code pages
+             * (W refused -> slow path keeps SMC invalidation) identically. */
+            DTlbEnt *de = dtlb_ent(base);
+            if (de->tag == dtlb_tag(c, base) && (de->pte & DTLB_W)) {
+                memset((u8 *)(uintptr_t)(de->pte & ~0xfffULL) + (base & 0xfffULL), 0, 64);
+                return;
+            }
             for (unsigned i = 0; i < 64; i += 8)
                 if (!mem_write(c, base + i, 8, 0)) return;
             return;

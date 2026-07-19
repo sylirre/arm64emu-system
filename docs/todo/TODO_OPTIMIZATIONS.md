@@ -59,6 +59,17 @@ in-guest `dd if=/dev/zero of=/dev/null bs=1M` (DC ZVA path) and
   Boot wall-clock neutral (±1%, interleaved A/B); fork/exec-heavy in-guest
   shell segment ≈2% faster under `-jit` — the win scales with user-space
   memory churn, which the boot barely exercises.
+- **#11 — DC ZVA host memset** (2026-07-19): one D-TLB probe (64-aligned, never
+  page-crossing) + `memset(host, 0, 64)`; miss/deny keeps the 8×`mem_write`
+  loop (faults, MMIO, watchpoints, JIT code pages). Interp/`-pd` only — the
+  JIT already inlines ZVA.
+- **#12 — single-probe 16-byte accesses** (2026-07-19): `mem_read128`/
+  `mem_write128` do one D-TLB probe + one 16-byte host copy when in-page
+  (all Q loads/stores and Q/D pairs funnel through them), and `ldst_pair`
+  routes X-pairs through the same helpers. Fallback = the old two-halves
+  path, observably identical (same bytes, same split-VA fault). In-guest
+  `-pd`: 2 GB `dd /dev/zero → /dev/null` −4.2%, 128 MB pipe copy −3.6%;
+  boot neutral-to-better.
 
 ---
 
@@ -74,18 +85,6 @@ change the D-TLB tag ABI shared with both JIT backends' inline probes
 (`dtlb_ctxgen`) — high blast radius for negligible measured payoff. Revisit
 only if a context-switch-heavy workload (many concurrent processes) profiles
 TTBR0-write refills as hot.
-
-### 11. DC ZVA: one translation + host memset
-`sys_op` (`sysreg.c:40`) still does ZVA as 8 × `mem_write(8B)`. Each write now
-hits the D-TLB fast path (#2), so the cost is 8 cheap host stores rather than 8
-translations — but a single `memset(host_ptr, 0, 64)` on the RAM fast path is
-still nicer (kernel `clear_page`/musl `memset` hammer this).
-
-### 12. Single-translation 16-byte and pair accesses
-`mem_read128`/`mem_write128` (`mmu.c:347`), `ldst_pair`, and `ldst_vector_multi`
-still do two independent 8-byte accesses. With #2 these are two D-TLB hits (cheap)
-rather than two full walks, but one probe + one host copy for the non-crossing
-case is still a win on NEON `memcpy` (4×Q/iter).
 
 ---
 

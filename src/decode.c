@@ -955,15 +955,26 @@ static void ldst_pair(CPU *c, u32 insn) {
                     : (vreg_store(c, Rt, addr, esz) && vreg_store(c, Rt2, addr + esz, esz));
         if (!ok) return;   /* faulted: skip writeback (instruction re-executes) */
     } else if (L) {
-        u64 a, b;
-        if (!mem_read(c, addr, esz, &a)) return;
-        if (!mem_read(c, addr + esz, esz, &b)) return;
-        if (signed_word) { set_x(c, Rt, sign_extend(a, 32)); set_x(c, Rt2, sign_extend(b, 32)); }
-        else if (esz == 4) { set_x(c, Rt, (u32)a); set_x(c, Rt2, (u32)b); }
-        else { set_x(c, Rt, a); set_x(c, Rt2, b); }
+        if (esz == 8) {                    /* LDP Xt: one 16-byte access */
+            V128 v;
+            if (!mem_read128(c, addr, &v)) return;
+            set_x(c, Rt, v.d[0]); set_x(c, Rt2, v.d[1]);
+        } else {
+            u64 a, b;
+            if (!mem_read(c, addr, esz, &a)) return;
+            if (!mem_read(c, addr + esz, esz, &b)) return;
+            if (signed_word) { set_x(c, Rt, sign_extend(a, 32)); set_x(c, Rt2, sign_extend(b, 32)); }
+            else { set_x(c, Rt, (u32)a); set_x(c, Rt2, (u32)b); }
+        }
     } else {
-        if (!mem_write(c, addr, esz, reg_x(c, Rt))) return;
-        if (!mem_write(c, addr + esz, esz, reg_x(c, Rt2))) return;
+        if (esz == 8) {                    /* STP Xt: one 16-byte access */
+            V128 v;
+            v.d[0] = reg_x(c, Rt); v.d[1] = reg_x(c, Rt2);
+            if (!mem_write128(c, addr, &v)) return;
+        } else {
+            if (!mem_write(c, addr, esz, reg_x(c, Rt))) return;
+            if (!mem_write(c, addr + esz, esz, reg_x(c, Rt2))) return;
+        }
     }
     if (wb) set_xsp(c, Rn, wbval);
 }
