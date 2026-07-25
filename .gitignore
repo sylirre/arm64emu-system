@@ -4,6 +4,7 @@
 *.o
 *.d
 /build/
+build.log
 
 # saved diverging images from tests/run_fuzz_engines.sh
 /tests/fuzz_failures/
