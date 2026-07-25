@@ -142,9 +142,16 @@ src/
   exception.c   exception entry/return (VBAR vectors, ESR/FAR/ELR/SPSR, ERET)
   memory.c      physical bus: RAM + NOR-flash CFI command set + MMIO dispatch
   tty.c         raw-terminal serial console via termios
+  platform.c    device instantiation, DTB placement, kernel load, tick/WFI
   devices/      gicv2, timer, pl011, pl031, psci, fwcfg, virtio_blk (--drive),
                 virtio_net (--net), virtio_9p (--virtfs), virtio_console (--console)
   fdt/virt.dts  device tree (QEMU virt tree; compiled to virt_dtb.h, embedded)
+  jit/          accelerated engines: predecode.{h,c} (the default direct-threaded
+                tier + the JIT's classifier), jit.c runtime, ir.h, frontend.c,
+                backend_x86_64.c, backend_a64.c
+  net/          usernet, the built-in user-mode NAT stack behind virtio-net
+                (core/udp/tcp; no TAP, TUN, privileges or external libraries)
+docs/           jit.md, pd.md, parity.md, todo/
 tests/          self-checking assembly tests + QEMU differential helpers
 ```
 
