@@ -221,6 +221,28 @@ static void fp_wr_h(CPU *c, unsigned d, u16 h) { c->v[d].d[0] = h; c->v[d].d[1] 
  * family below is raise-free bit arithmetic, compares classify NaNs before
  * ordering), and nothing outside guest FP touches host FP (the one stats
  * printf in jit.c fences itself).
+ *
+ * WHAT THIS ASKS OF THE COMPILER, and why the invariants above are written the
+ * way they are. C does not promise any of it: without #pragma STDC FENV_ACCESS
+ * ON — which neither gcc nor clang really implements — the compiler may assume
+ * nobody looks at the exception flags, and is then free to (a) hoist an FP
+ * operation out of the branch that guards it and run it unconditionally, and
+ * (b) implement a C relational with the *quiet* host compare instead of the
+ * signaling one. gcc happens to do neither; clang does both, so every Termux
+ * build was quietly wrong until 2026-08-01:
+ *   - FMAX's NaN arm returned `n + m`, which clang evaluated for every FMAX;
+ *     0.5 + a denormal left IXC set on an instruction that raises nothing;
+ *   - FCMGT of a quiet NaN stopped raising IOC, because clang compares quiet;
+ *   - (u64)double has no x86-64 instruction, and clang's branchless expansion
+ *     subtracts 2^63 unconditionally — inexact, so an exact FCVTZU set IXC.
+ * All three are now decided in the source instead of left to codegen: NaN is
+ * classified before any relational (fcm_test_*), the flag a NaN arm owes is
+ * raised by hand, and the unsigned convert is integer arithmetic
+ * (d_to_u64_exact). What is NOT expressible that way is an FP op a compiler
+ * speculates out of ANY guard — FPRecipStepFused's 0*inf arm, say. No compiler
+ * we build with does that today, m22_fpsr pins it, and the escape hatch if one
+ * starts is to compile this file with -ffp-exception-behavior=strict (clang;
+ * measured ~7% on the FP path, which is why it is not on by default).
  * Known corners vs the architecture, deliberate: tininess is detected after
  * rounding on x86 (ARM: before) — one boundary ULP of difference in UFC for
  * float/double; f64-input fixed-point converts with 2^1000-scale overflow
@@ -536,6 +558,58 @@ static int fp_compare_s(float a, float b, int signaling) {
     return (a < b) ? -1 : (a > b) ? 1 : 0;
 }
 
+/* The mask-producing compares — FCMEQ/FCMGE/FCMGT/FCMLE/FCMLT, their
+ * compare-with-zero forms and FACGE/FACGT (which pass |x|,|y|; FPAbs leaves a
+ * NaN signaling or quiet as it was). Same discipline as fp_compare_* above,
+ * for the same reason and one more: which host instruction a C relational
+ * becomes — the quiet compare or the signaling one — is the compiler's choice,
+ * not ours. gcc happens to pick the signaling form, so FCMGT of a *quiet* NaN
+ * raised IOC by luck; clang picks the quiet one and it silently stopped.
+ * Classify first, raise by hand. Only EQ is architecturally quiet (IOC for a
+ * signaling NaN alone); every other form raises for any NaN, and unordered is
+ * false for all of them. */
+enum { FCM_EQ = 0, FCM_GE, FCM_GT, FCM_LE, FCM_LT };
+static int fcm_ordered(int kind, int lt, int eq, int gt) {
+    switch (kind) {
+        case FCM_EQ: return eq;
+        case FCM_GE: return gt || eq;
+        case FCM_GT: return gt;
+        case FCM_LE: return lt || eq;
+        default:     return lt;
+    }
+}
+static int fcm_test_d(int kind, double x, double y) {
+    if (x != x || y != y) {
+        if (kind != FCM_EQ || is_snan_d(x) || is_snan_d(y)) g_fpexc |= FPSR_IOC;
+        return 0;
+    }
+    return fcm_ordered(kind, x < y, x == y, x > y);
+}
+static int fcm_test_s(int kind, float x, float y) {
+    if (x != x || y != y) {
+        if (kind != FCM_EQ || is_snan_s(x) || is_snan_s(y)) g_fpexc |= FPSR_IOC;
+        return 0;
+    }
+    return fcm_ordered(kind, x < y, x == y, x > y);
+}
+
+/* FSQRT's Invalid-Operation flag, raised here rather than inherited from
+ * whatever the host's sqrt() turns out to be. A negative operand is invalid
+ * (-0.0 is not, and returns -0.0); a signaling NaN is invalid too. Both come
+ * for free when __builtin_sqrt inlines to the hardware instruction, and not at
+ * all when it becomes a libm call that answers a negative input with a
+ * ready-made NaN — Bionic's does, so on Termux `fsqrt d0, #-1.0` raised
+ * nothing. The result is already host-independent (fpnan_* below). */
+static void fsqrt_raise_d(double x) {
+    if (x != x) { if (is_snan_d(x)) g_fpexc |= FPSR_IOC; return; }
+    if (x < 0.0) g_fpexc |= FPSR_IOC;
+}
+static void fsqrt_raise_s(float x) {
+    if (x != x) { if (is_snan_s(x)) g_fpexc |= FPSR_IOC; return; }
+    if (x < 0.0f) g_fpexc |= FPSR_IOC;
+}
+
+
 /* Set NZCV from an FP compare of a vs b (ordered), per the architecture. */
 static void fp_set_flags(CPU *c, int cmp /* -1 lt, 0 eq, 1 gt, 2 unordered */) {
     u32 n = 0;
@@ -629,7 +703,7 @@ static void exec_fp_scalar(CPU *c, u32 insn) {
                 case 0x0: fp_wr_h(c, Rd, fp_rd_h(c, Rn)); return;      /* FMOV  */
                 case 0x1: r = __builtin_fabs(x); break;               /* FABS  */
                 case 0x2: r = -x; break;                              /* FNEG  */
-                case 0x3: r = fpnan_d(__builtin_sqrt(x), x, x); break; /* FSQRT */
+                case 0x3: fsqrt_raise_d(x); r = fpnan_d(__builtin_sqrt(x), x, x); break; /* FSQRT */
                 case 0x8: r = frint_d(x, 0, 0); break;                /* FRINTN */
                 case 0x9: r = frint_d(x, 1, 0); break;                /* FRINTP */
                 case 0xa: r = frint_d(x, 2, 0); break;                /* FRINTM */
@@ -853,8 +927,8 @@ static void exec_fp_scalar(CPU *c, u32 insn) {
                 case 0x1: if (dbl) fp_wr_d(c, Rd, __builtin_fabs(fp_rd_d(c, Rn))); else fp_wr_s(c, Rd, __builtin_fabsf(fp_rd_s(c, Rn))); return; /* FABS */
                 case 0x2: if (dbl) fp_wr_d(c, Rd, -fp_rd_d(c, Rn)); else fp_wr_s(c, Rd, -fp_rd_s(c, Rn)); return; /* FNEG */
                 case 0x3: {                                        /* FSQRT */
-                    if (dbl) { double x = fp_rd_d(c, Rn); fp_wr_d(c, Rd, fpnan_d(__builtin_sqrt(x), x, x)); }
-                    else     { float  x = fp_rd_s(c, Rn); fp_wr_s(c, Rd, fpnan_s(__builtin_sqrtf(x), x, x)); }
+                    if (dbl) { double x = fp_rd_d(c, Rn); fsqrt_raise_d(x); fp_wr_d(c, Rd, fpnan_d(__builtin_sqrt(x), x, x)); }
+                    else     { float  x = fp_rd_s(c, Rn); fsqrt_raise_s(x); fp_wr_s(c, Rd, fpnan_s(__builtin_sqrtf(x), x, x)); }
                     return;
                 }
                 case 0x4: if (ftype == 1) fp_wr_s(c, Rd, (float)fp_rd_d(c, Rn)); else fpsimd_undef(c, insn); return;  /* FCVT to single (from double) */
@@ -1246,11 +1320,25 @@ static double fop_d_raw(unsigned op, double n, double m, double d) {
                 return (__builtin_signbit(n) ^ __builtin_signbit(m)) ? -2.0 : 2.0;
             return n * m;
         case FOP_MAX:
-            if (__builtin_isnan(n) || __builtin_isnan(m)) return n + m;
+            /* NaN: fop_d's FPProcessNaNs wrapper decides *which* NaN comes
+             * back and quiets it, so this only has to return one. It must not
+             * compute it as `n + m`: that add is an FP op inside a branch, and
+             * a compiler free to assume nothing observes the exception flags
+             * (clang's default) hoists it out and runs it for every FMAX —
+             * 0.5 + a denormal then leaves the host's IXC set for a guest
+             * instruction that raises nothing. sNaN's IOC, which the add used
+             * to supply, is raised here instead. */
+            if (__builtin_isnan(n) || __builtin_isnan(m)) {
+                if (is_snan_d(n) || is_snan_d(m)) g_fpexc |= FPSR_IOC;
+                return __builtin_isnan(n) ? n : m;
+            }
             if (n == m) return __builtin_signbit(n) ? m : n;   /* +0 > -0 */
             return n > m ? n : m;
         case FOP_MIN:
-            if (__builtin_isnan(n) || __builtin_isnan(m)) return n + m;
+            if (__builtin_isnan(n) || __builtin_isnan(m)) {
+                if (is_snan_d(n) || is_snan_d(m)) g_fpexc |= FPSR_IOC;
+                return __builtin_isnan(n) ? n : m;
+            }
             if (n == m) return __builtin_signbit(n) ? n : m;
             return n < m ? n : m;
         case FOP_MAXNM:
@@ -1287,12 +1375,18 @@ static float fop_s_raw(unsigned op, float n, float m, float d) {
             if ((__builtin_isinf(n) && m == 0.0f) || (__builtin_isinf(m) && n == 0.0f))
                 return (__builtin_signbit(n) ^ __builtin_signbit(m)) ? -2.0f : 2.0f;
             return n * m;
-        case FOP_MAX:
-            if (__builtin_isnan(n) || __builtin_isnan(m)) return n + m;
+        case FOP_MAX:                                  /* see fop_d_raw */
+            if (__builtin_isnan(n) || __builtin_isnan(m)) {
+                if (is_snan_s(n) || is_snan_s(m)) g_fpexc |= FPSR_IOC;
+                return __builtin_isnan(n) ? n : m;
+            }
             if (n == m) return __builtin_signbit(n) ? m : n;
             return n > m ? n : m;
         case FOP_MIN:
-            if (__builtin_isnan(n) || __builtin_isnan(m)) return n + m;
+            if (__builtin_isnan(n) || __builtin_isnan(m)) {
+                if (is_snan_s(n) || is_snan_s(m)) g_fpexc |= FPSR_IOC;
+                return __builtin_isnan(n) ? n : m;
+            }
             if (n == m) return __builtin_signbit(n) ? n : m;
             return n < m ? n : m;
         case FOP_MAXNM:
@@ -1396,9 +1490,10 @@ static void simd_three_same_fp(CPU *c, u32 insn) {
         for (unsigned i = 0; i < n; i++) {
             double x = vget_d(&vn, i), y = vget_d(&vm, i);
             if (cmp) {
-                int t = (opc == 0x1c) ? (key == 0x1c ? x == y : key == 0x5c ? x >= y : x > y)
-                      : (key == 0x5d ? __builtin_fabs(x) >= __builtin_fabs(y)
-                                     : __builtin_fabs(x) >  __builtin_fabs(y));
+                int t = (opc == 0x1c)
+                      ? fcm_test_d(key == 0x1c ? FCM_EQ : key == 0x5c ? FCM_GE : FCM_GT, x, y)
+                      : fcm_test_d(key == 0x5d ? FCM_GE : FCM_GT,
+                                   __builtin_fabs(x), __builtin_fabs(y));
                 r.d[i] = t ? ~0ULL : 0; continue;
             }
             vset_d(&r, i, fop_d(op, x, y, vget_d(&vd, i)));
@@ -1419,9 +1514,10 @@ static void simd_three_same_fp(CPU *c, u32 insn) {
     for (unsigned i = 0; i < n; i++) {
         float x = vget_s(&vn, i), y = vget_s(&vm, i);
         if (cmp) {
-            int t = (opc == 0x1c) ? (key == 0x1c ? x == y : key == 0x5c ? x >= y : x > y)
-                  : (key == 0x5d ? __builtin_fabsf(x) >= __builtin_fabsf(y)
-                                 : __builtin_fabsf(x) >  __builtin_fabsf(y));
+            int t = (opc == 0x1c)
+                  ? fcm_test_s(key == 0x1c ? FCM_EQ : key == 0x5c ? FCM_GE : FCM_GT, x, y)
+                  : fcm_test_s(key == 0x5d ? FCM_GE : FCM_GT,
+                               __builtin_fabsf(x), __builtin_fabsf(y));
             r.s[i] = t ? 0xffffffffu : 0; continue;
         }
         vset_s(&r, i, fop_s(op, x, y, vget_s(&vd, i)));
@@ -1476,11 +1572,13 @@ static void simd_three_same_fp16(CPU *c, u32 insn) {
     for (unsigned i = 0; i < n; i++) {
         double x = (double)f16_to_f32(vn.h[i]), y = (double)f16_to_f32(vm.h[i]);
         if (cmp) {
-            int t = (key == 0x04) ? (x == y)                                    /* FCMEQ */
-                  : (key == 0x14) ? (x >= y)                                    /* FCMGE */
-                  : (key == 0x1c) ? (x >  y)                                    /* FCMGT */
-                  : (key == 0x15) ? (__builtin_fabs(x) >= __builtin_fabs(y))    /* FACGE */
-                                  : (__builtin_fabs(x) >  __builtin_fabs(y));   /* FACGT */
+            int t = (key == 0x04) ? fcm_test_d(FCM_EQ, x, y)                   /* FCMEQ */
+                  : (key == 0x14) ? fcm_test_d(FCM_GE, x, y)                   /* FCMGE */
+                  : (key == 0x1c) ? fcm_test_d(FCM_GT, x, y)                   /* FCMGT */
+                  : (key == 0x15) ? fcm_test_d(FCM_GE, __builtin_fabs(x),      /* FACGE */
+                                                       __builtin_fabs(y))
+                                  : fcm_test_d(FCM_GT, __builtin_fabs(x),      /* FACGT */
+                                                       __builtin_fabs(y));
             r.h[i] = t ? 0xffffu : 0; continue;
         }
         r.h[i] = f64_to_f16(fop_d(op, x, y, (double)f16_to_f32(vd.h[i])));
@@ -1915,6 +2013,22 @@ static void simd_across(CPU *c, u32 insn) {
 
 /* FP -> integer lane convert with saturation (shared clamp logic). x64 selects
  * 64-bit (.2d) vs 32-bit (.4s) result width; is_signed picks the signed form. */
+/* Exact double -> unsigned integer, for a value already known to be integral,
+ * non-negative and in range. A plain (u64) cast is not safe here: x86-64 has
+ * no double->u64 instruction, so the compiler synthesizes one, and clang's
+ * branchless form evaluates `r - 2^63` on EVERY conversion — inexact for small
+ * values, which leaves the host IXC set and the guest then sees it on an exact
+ * FCVTZU (gcc branches, so it only subtracts when it must). Same raise-free
+ * bit arithmetic as the f_trunc family above. */
+static u64 d_to_u64_exact(double r) {
+    u64 b; memcpy(&b, &r, 8);
+    int e = (int)((b >> 52) & 0x7ff) - 1023;
+    if (e < 0)  return 0;                 /* |r| < 1, and r is integral -> 0 */
+    if (e > 63) return UINT64_MAX;        /* caller saturates first; belt only */
+    u64 m = (b & 0xfffffffffffffULL) | (1ULL << 52);
+    return (e >= 52) ? (m << (e - 52)) : (m >> (52 - e));
+}
+
 static u64 fcvt_to_int(double r, double orig, int is_signed, int x64) {
     if (r != r) {                      /* NaN -> 0 (FPToFixed), not INT_MIN */
         g_fpexc |= FPSR_IOC;
@@ -1934,8 +2048,8 @@ static u64 fcvt_to_int(double r, double orig, int is_signed, int x64) {
         s32 m = (r >= 2147483647.0) ? INT32_MAX : (r <= -2147483648.0) ? INT32_MIN : (s32)r; return (u64)(u32)m;
     }
     if (r < 0) r = 0;
-    if (x64) { u64 m = (r >= 18446744073709551615.0) ? UINT64_MAX : (u64)r; return m; }
-    u32 m = (r >= 4294967295.0) ? UINT32_MAX : (u32)r; return m;
+    if (x64) { u64 m = (r >= 18446744073709551615.0) ? UINT64_MAX : d_to_u64_exact(r); return m; }
+    u32 m = (r >= 4294967295.0) ? UINT32_MAX : (u32)d_to_u64_exact(r); return m;
 }
 /* 16-bit saturating fp->int, for the FP16 vector converts (int result sits in a
  * half-width lane). Mirrors fcvt_to_int's clamp at the .8h element width. */
@@ -2207,7 +2321,8 @@ static void simd_two_misc_fp(CPU *c, u32 insn) {
         switch (key) {
             case 0x2f: res = __builtin_fabs(x); break;                 /* FABS  */
             case 0x6f: res = -x; break;                                /* FNEG  */
-            case 0x7f: res = fpnan_d(dbl ? __builtin_sqrt(x) : (double)__builtin_sqrtf((float)x), x, x); break; /* FSQRT */
+            case 0x7f: fsqrt_raise_d(x);
+                       res = fpnan_d(dbl ? __builtin_sqrt(x) : (double)__builtin_sqrtf((float)x), x, x); break; /* FSQRT */
             case 0x18: res = frint_d(x, 0, 0); break;                  /* FRINTN */
             case 0x38: res = frint_d(x, 1, 0); break;                  /* FRINTP */
             case 0x58: res = frint_d(x, 4, 0); break;                  /* FRINTA */
@@ -2222,11 +2337,11 @@ static void simd_two_misc_fp(CPU *c, u32 insn) {
                 int rmode = (opc == 0x1a) ? (hsz ? 1 : 0) : (opc == 0x1b) ? (hsz ? 3 : 2) : 4;
                 ires = fcvt_to_int(fround_mode(x, rmode), x, U == 0, x64); is_int = 1; break;
             }
-            case 0x2c: mask = (x >  0.0) ? ~0ULL : 0; is_mask = 1; break;  /* FCMGT #0 */
-            case 0x6c: mask = (x >= 0.0) ? ~0ULL : 0; is_mask = 1; break;  /* FCMGE #0 */
-            case 0x2d: mask = (x == 0.0) ? ~0ULL : 0; is_mask = 1; break;  /* FCMEQ #0 */
-            case 0x6d: mask = (x <= 0.0) ? ~0ULL : 0; is_mask = 1; break;  /* FCMLE #0 */
-            case 0x2e: mask = (x <  0.0) ? ~0ULL : 0; is_mask = 1; break;  /* FCMLT #0 */
+            case 0x2c: mask = fcm_test_d(FCM_GT, x, 0.0) ? ~0ULL : 0; is_mask = 1; break;  /* FCMGT #0 */
+            case 0x6c: mask = fcm_test_d(FCM_GE, x, 0.0) ? ~0ULL : 0; is_mask = 1; break;  /* FCMGE #0 */
+            case 0x2d: mask = fcm_test_d(FCM_EQ, x, 0.0) ? ~0ULL : 0; is_mask = 1; break;  /* FCMEQ #0 */
+            case 0x6d: mask = fcm_test_d(FCM_LE, x, 0.0) ? ~0ULL : 0; is_mask = 1; break;  /* FCMLE #0 */
+            case 0x2e: mask = fcm_test_d(FCM_LT, x, 0.0) ? ~0ULL : 0; is_mask = 1; break;  /* FCMLT #0 */
             case 0x3d:  /* FRECPE  */
                 if (dbl) r.d[i] = recpe_f64(vn.d[i]); else r.s[i] = recpe_f32(vn.s[i]);
                 continue;
@@ -2270,7 +2385,8 @@ static void simd_two_misc_fp16(CPU *c, u32 insn) {
         switch (key) {
             case 0x2f: res = __builtin_fabs(x); break;                 /* FABS   */
             case 0x6f: res = -x; break;                                /* FNEG   */
-            case 0x7f: res = fpnan_d(__builtin_sqrt(x), x, x); break; /* FSQRT  */
+            case 0x7f: fsqrt_raise_d(x);
+                       res = fpnan_d(__builtin_sqrt(x), x, x); break; /* FSQRT  */
             case 0x18: res = frint_d(x, 0, 0); break;                  /* FRINTN */
             case 0x38: res = frint_d(x, 1, 0); break;                  /* FRINTP */
             case 0x58: res = frint_d(x, 4, 0); break;                  /* FRINTA */
@@ -2285,11 +2401,11 @@ static void simd_two_misc_fp16(CPU *c, u32 insn) {
                 int rmode = (opc == 0x1a) ? (hsz ? 1 : 0) : (opc == 0x1b) ? (hsz ? 3 : 2) : 4;
                 r.h[i] = fcvt_to_int16(fround_mode(x, rmode), x, U == 0); done = 1; break;
             }
-            case 0x2c: r.h[i] = (x >  0.0) ? 0xffffu : 0; done = 1; break;  /* FCMGT #0 */
-            case 0x6c: r.h[i] = (x >= 0.0) ? 0xffffu : 0; done = 1; break;  /* FCMGE #0 */
-            case 0x2d: r.h[i] = (x == 0.0) ? 0xffffu : 0; done = 1; break;  /* FCMEQ #0 */
-            case 0x6d: r.h[i] = (x <= 0.0) ? 0xffffu : 0; done = 1; break;  /* FCMLE #0 */
-            case 0x2e: r.h[i] = (x <  0.0) ? 0xffffu : 0; done = 1; break;  /* FCMLT #0 */
+            case 0x2c: r.h[i] = fcm_test_d(FCM_GT, x, 0.0) ? 0xffffu : 0; done = 1; break;  /* FCMGT #0 */
+            case 0x6c: r.h[i] = fcm_test_d(FCM_GE, x, 0.0) ? 0xffffu : 0; done = 1; break;  /* FCMGE #0 */
+            case 0x2d: r.h[i] = fcm_test_d(FCM_EQ, x, 0.0) ? 0xffffu : 0; done = 1; break;  /* FCMEQ #0 */
+            case 0x6d: r.h[i] = fcm_test_d(FCM_LE, x, 0.0) ? 0xffffu : 0; done = 1; break;  /* FCMLE #0 */
+            case 0x2e: r.h[i] = fcm_test_d(FCM_LT, x, 0.0) ? 0xffffu : 0; done = 1; break;  /* FCMLT #0 */
             case 0x3d: r.h[i] = recpe_f16(vn.h[i]);  done = 1; break;   /* FRECPE  */
             case 0x7d: r.h[i] = rsqrte_f16(vn.h[i]); done = 1; break;   /* FRSQRTE */
             default: fpsimd_undef(c, insn); return;
@@ -2429,11 +2545,11 @@ static void simd_scalar_cvt_fp16(CPU *c, u32 insn) {
             int rmode = (opc == 0x1a) ? (hsz ? 1 : 0) : (opc == 0x1b) ? (hsz ? 3 : 2) : 4;
             r.h[0] = fcvt_to_int16(fround_mode(x, rmode), x, U == 0); break;
         }
-        case 0x2c: r.h[0] = (x >  0.0) ? 0xffffu : 0; break;       /* FCMGT #0 */
-        case 0x6c: r.h[0] = (x >= 0.0) ? 0xffffu : 0; break;       /* FCMGE #0 */
-        case 0x2d: r.h[0] = (x == 0.0) ? 0xffffu : 0; break;       /* FCMEQ #0 */
-        case 0x6d: r.h[0] = (x <= 0.0) ? 0xffffu : 0; break;       /* FCMLE #0 */
-        case 0x2e: r.h[0] = (x <  0.0) ? 0xffffu : 0; break;       /* FCMLT #0 */
+        case 0x2c: r.h[0] = fcm_test_d(FCM_GT, x, 0.0) ? 0xffffu : 0; break;  /* FCMGT #0 */
+        case 0x6c: r.h[0] = fcm_test_d(FCM_GE, x, 0.0) ? 0xffffu : 0; break;  /* FCMGE #0 */
+        case 0x2d: r.h[0] = fcm_test_d(FCM_EQ, x, 0.0) ? 0xffffu : 0; break;  /* FCMEQ #0 */
+        case 0x6d: r.h[0] = fcm_test_d(FCM_LE, x, 0.0) ? 0xffffu : 0; break;  /* FCMLE #0 */
+        case 0x2e: r.h[0] = fcm_test_d(FCM_LT, x, 0.0) ? 0xffffu : 0; break;  /* FCMLT #0 */
         case 0x3d: r.h[0] = recpe_f16(h);  break;                  /* FRECPE  */
         case 0x7d: r.h[0] = rsqrte_f16(h); break;                  /* FRSQRTE */
         case 0x3f: r.h[0] = frecpx_f16(h); break;                  /* FRECPX  */
@@ -2490,8 +2606,9 @@ static void simd_scalar_cvt(CPU *c, u32 insn) {
     }
     if (opcode >= 0x0c && opcode <= 0x0e) {
         double x = dbl ? vget_d(&c->v[Rn], 0) : (double)vget_s(&c->v[Rn], 0);
-        int t = (opcode == 0x0c) ? (U ? x >= 0.0 : x > 0.0)
-              : (opcode == 0x0d) ? (U ? x <= 0.0 : x == 0.0) : (x < 0.0);
+        int t = (opcode == 0x0c) ? fcm_test_d(U ? FCM_GE : FCM_GT, x, 0.0)
+              : (opcode == 0x0d) ? fcm_test_d(U ? FCM_LE : FCM_EQ, x, 0.0)
+                                 : fcm_test_d(FCM_LT, x, 0.0);
         V128 r; r.d[0] = r.d[1] = 0;
         if (dbl) r.d[0] = t ? ~0ULL : 0; else r.s[0] = t ? 0xffffffffu : 0;
         c->v[Rd] = r; return;
@@ -3117,17 +3234,21 @@ static unsigned fp3_key_op(unsigned key) {       /* FP three-same arith op map (
 }
 static int fp3_cmp_d(unsigned key, double x, double y) {
     switch (key) {
-        case 0x1c: return x == y; case 0x5c: return x >= y; case 0x7c: return x > y;   /* FCMEQ/GE/GT */
-        case 0x5d: return __builtin_fabs(x) >= __builtin_fabs(y);                       /* FACGE */
-        case 0x7d: return __builtin_fabs(x) >  __builtin_fabs(y);                       /* FACGT */
+        case 0x1c: return fcm_test_d(FCM_EQ, x, y);   /* FCMEQ */
+        case 0x5c: return fcm_test_d(FCM_GE, x, y);   /* FCMGE */
+        case 0x7c: return fcm_test_d(FCM_GT, x, y);   /* FCMGT */
+        case 0x5d: return fcm_test_d(FCM_GE, __builtin_fabs(x), __builtin_fabs(y)); /* FACGE */
+        case 0x7d: return fcm_test_d(FCM_GT, __builtin_fabs(x), __builtin_fabs(y)); /* FACGT */
     }
     return 0;
 }
 static int fp3_cmp_s(unsigned key, float x, float y) {
     switch (key) {
-        case 0x1c: return x == y; case 0x5c: return x >= y; case 0x7c: return x > y;
-        case 0x5d: return __builtin_fabsf(x) >= __builtin_fabsf(y);
-        case 0x7d: return __builtin_fabsf(x) >  __builtin_fabsf(y);
+        case 0x1c: return fcm_test_s(FCM_EQ, x, y);   /* FCMEQ */
+        case 0x5c: return fcm_test_s(FCM_GE, x, y);   /* FCMGE */
+        case 0x7c: return fcm_test_s(FCM_GT, x, y);   /* FCMGT */
+        case 0x5d: return fcm_test_s(FCM_GE, __builtin_fabsf(x), __builtin_fabsf(y)); /* FACGE */
+        case 0x7d: return fcm_test_s(FCM_GT, __builtin_fabsf(x), __builtin_fabsf(y)); /* FACGT */
     }
     return 0;
 }
