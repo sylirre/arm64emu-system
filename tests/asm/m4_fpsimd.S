@@ -194,6 +194,68 @@ _start:
     fcvtzu  w0, s1
     CKX     x0, 0, 39
 
+    /* AArch64 NaN results (exec_fpsimd.c fpnan_*). An invalid operation whose
+     * operands hold no NaN gives the architecture's DefaultNaN, which is
+     * POSITIVE; the x86 host answers with the negative "real indefinite" QNaN
+     * and the interpreter used to inherit that sign. FNMUL is the one form
+     * whose generated NaN really is negative -- it applies FPNeg after FPMul,
+     * and FPNeg flips a NaN's sign too. */
+    fmov    d0, xzr                     /* +0.0 */
+    fdiv    d1, d0, d0                  /* 0/0 -> +DefaultNaN */
+    fmov    x0, d1
+    CKX     x0, 0x7ff8000000000000, 40
+    ldr     x4, =0x7ff0000000000000     /* +inf */
+    fmov    d3, x4
+    fnmul   d1, d0, d3                  /* 0*inf invalid, then FPNeg */
+    fmov    x0, d1
+    CKX     x0, 0xfff8000000000000, 41
+    fmov    d2, #-1.0
+    fsqrt   d1, d2                      /* sqrt(-1) -> +DefaultNaN */
+    fmov    x0, d1
+    CKX     x0, 0x7ff8000000000000, 42
+    fmov    s0, wzr
+    fdiv    s1, s0, s0
+    fmov    w0, s1
+    CKX     x0, 0x7fc00000, 43
+    movi    v0.4s, #0
+    fdiv    v1.4s, v0.4s, v0.4s         /* vector, every lane */
+    umov    x0, v1.d[0]
+    CKX     x0, 0x7fc000007fc00000, 44
+
+    /* Propagation is decided here too, so it no longer depends on which
+     * operand the host compiler made the destination: a signalling operand is
+     * taken first and quieted, otherwise the first quiet one in the
+     * architecture's order -- and for the fused multiply-add family that order
+     * starts at the ADDEND. */
+    movz    w4, #0x7fc0, lsl #16
+    movk    w4, #0xaaaa                 /* +qNaN payload aaaa */
+    fmov    s2, w4
+    movz    w4, #0x7fc0, lsl #16
+    movk    w4, #0xbbbb                 /* +qNaN payload bbbb */
+    fmov    s3, w4
+    fadd    s1, s2, s3                  /* first operand wins */
+    fmov    w0, s1
+    CKX     x0, 0x7fc0aaaa, 45
+    movz    w4, #0x7f80, lsl #16
+    movk    w4, #0xbbbb                 /* sNaN payload bbbb */
+    fmov    s3, w4
+    fadd    s1, s2, s3                  /* signalling beats a quiet first */
+    fmov    w0, s1
+    CKX     x0, 0x7fc0bbbb, 46
+    movz    w4, #0x7fc0, lsl #16
+    movk    w4, #0xcccc
+    fmov    s4, w4                      /* addend +qNaN payload cccc */
+    movz    w4, #0x7fc0, lsl #16
+    movk    w4, #0xbbbb
+    fmov    s3, w4
+    fmadd   s1, s2, s3, s4              /* addend is scanned first */
+    fmov    w0, s1
+    CKX     x0, 0x7fc0cccc, 47
+    fmov    s5, #1.0
+    fmsub   s1, s2, s5, s5              /* FPNeg(n) reaches the NaN's sign */
+    fmov    w0, s1
+    CKX     x0, 0xffc0aaaa, 48
+
     movz    x0, #0
     hlt     #0
 fail:
