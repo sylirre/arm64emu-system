@@ -189,6 +189,17 @@ void machine_wait_for_event(Machine *m) {
         if (!c->irq_line && !has_input && dl != ~0ULL)
             c->timer_skip += dl;     /* fast-forward to the nearest timer deadline */
 
+        /* Nothing armed and nothing that could ever arm itself: with the clock
+         * driven by retired instructions and the CPU halted, the guest state is
+         * frozen for good. Say so rather than spinning forever — a raw --bin
+         * image (no devices at all) that reaches WFI is the common case, and
+         * --max-insn cannot rescue it because icount has stopped advancing. A
+         * platform run keeps waiting: its UART, console and NIC can all deliver
+         * from the host at any time. */
+        if (dl == ~0ULL && !c->irq_line && !has_input &&
+            !m->uart && !m->vcon && !m->net && !m->rtc)
+            m->deadlock = true;
+
         m->io_poll_due = 0;          /* idle: keep host-IO latency tick-fine */
         machine_tick(m);             /* re-evaluate the timer line at the new count */
         if (c->irq_line || has_input) c->halted = false;

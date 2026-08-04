@@ -120,6 +120,15 @@ typedef struct Machine {
                                    * 0 forces a poll on the next tick */
 
     BusStatus last_bus_status;    /* set by phys_* on fault */
+
+    bool deadlock;                /* set by machine_wait_for_event when the CPU
+                                   * halted (WFI/WFE) with no wake source that
+                                   * could ever exist: no armed timer, no
+                                   * pending IRQ, and no device able to raise
+                                   * one. The run can only spin from here, and
+                                   * --max-insn cannot fire because a halted CPU
+                                   * retires nothing, so the loop stops and
+                                   * dumps instead. */
 } Machine;
 
 void machine_init(Machine *m, u64 ram_size);

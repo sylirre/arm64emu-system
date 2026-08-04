@@ -695,6 +695,13 @@ int main(int argc, char **argv) {
         if (m.cpu.halted) {
             if (!machine_wait_for_event) break;
             machine_wait_for_event(&m);
+            if (m.deadlock) {   /* halted for good: see Machine.deadlock */
+                fprintf(stderr, "[halted with no wake source at icount=%llu]\n",
+                        (unsigned long long)m.cpu.icount);
+                cpu_dump(&m.cpu);
+                ring_dump();
+                break;
+            }
         }
         if (max_insn && m.cpu.icount >= max_insn) {
             fprintf(stderr, "[maxinsn reached at icount=%llu]\n",
