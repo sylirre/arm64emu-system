@@ -318,6 +318,53 @@ _start:
     cmp     x10, x22
     b.ne    fail
 
+    /* ---- QC at the remaining hand-rolled clamps ----
+     * These all saturate correctly but used to clamp silently, so a guest
+     * reading the sticky bit could not tell saturation had happened. */
+    ldr     q0, [x21, #80]               /* .2d {INT64_MAX, INT64_MAX} */
+    ldr     q1, [x21, #16]               /* .2d {1, 1} */
+    CLRF
+    suqadd  v0.2d, v1.2d                 /* signed acc at the top + 1: QC */
+    RDF
+    CKX     x13, 0x08000000, 72
+    ldr     q0, [x21, #16]               /* .2d {1, 1} */
+    ldr     q1, [x21, #32]               /* .2d {-1, -1} */
+    CLRF
+    usqadd  v0.2d, v1.2d                 /* 1 + (-1 as signed) = 0: no clamp */
+    RDF
+    CKX     x13, 0, 73
+    ldr     q0, [x21, #16]
+    ldr     q2, [x21, #0]                /* signed addend INT64_MIN */
+    CLRF
+    usqadd  v0.2d, v2.2d                 /* unsigned 1 - 2^63: clamps to 0, QC */
+    RDF
+    CKX     x13, 0x08000000, 74
+    ldr     q0, [x21, #32]               /* .2d {-1, -1} = UINT64_MAX */
+    CLRF
+    uqxtn   v2.2s, v0.2d                 /* 2^64-1 -> 32 bits: QC */
+    RDF
+    CKX     x13, 0x08000000, 75
+    ldr     q0, [x21, #0]                /* INT64_MIN */
+    CLRF
+    sqshrun v2.2s, v0.2d, #1             /* negative -> unsigned: QC */
+    RDF
+    CKX     x13, 0x08000000, 76
+    ldr     q0, [x21, #32]               /* -1 as a signed .2d lane */
+    CLRF
+    sqshlu  v2.2d, v0.2d, #1             /* negative -> unsigned 0: QC */
+    RDF
+    CKX     x13, 0x08000000, 77
+    ldr     q0, [x21, #48]               /* .4s {INT32_MIN x4} */
+    CLRF
+    sqdmull v2.2d, v0.2s, v0.2s          /* 2*INT32_MIN^2 overflows s64: QC */
+    RDF
+    CKX     x13, 0x08000000, 78
+    ldr     q0, [x21, #64]               /* .4s {1,1,1,1}: no saturation */
+    CLRF
+    sqdmull v2.2d, v0.2s, v0.2s
+    RDF
+    CKX     x13, 0, 79
+
     /* ---- half-precision converts ---- */
     ldr     s0, [x20, #224]              /* 100000.0f: overflows half */
     CLRF
@@ -420,3 +467,6 @@ sdat:                                    /* saturation operands */
     .quad 0x8000000000000000, 0x8000000000000000   /* +0:  INT64_MIN x2 */
     .quad 1, 1                                     /* +16: 1 x2 */
     .quad 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF   /* +32: -1 x2 */
+    .word 0x80000000, 0x80000000, 0x80000000, 0x80000000  /* +48: INT32_MIN x4 */
+    .word 1, 1, 1, 1                                      /* +64: 1 x4 */
+    .quad 0x7FFFFFFFFFFFFFFF, 0x7FFFFFFFFFFFFFFF   /* +80: INT64_MAX x2 */
