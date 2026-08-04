@@ -1437,9 +1437,10 @@ static void exec_fp_dp3(CPU *c, u32 insn) {
          * and otherwise calls libm's fma — the build links -lm); on armv7 it
          * derives both result and flags by hand because Bionic's software fma
          * leaks its internal Inexact and its fmaf mis-rounds ties (see the
-         * fused_eval block above). The JIT frontend routes this family to the
-         * exec_a64 helper, so a host whose backend can only emit an unfused
-         * mul+add still matches the interpreter bit-for-bit. */
+         * fused_eval block above). The JIT inlines this family only where the
+         * backend can fuse (native fmadd on AArch64, FMA3 on x86-64); a host
+         * without one keeps the exec_a64 helper and still matches bit-for-bit
+         * (any correctly-rounded FMA is the same unique answer). */
         double n = fp_rd_d(c, Rn), m = fp_rd_d(c, Rm), a = fp_rd_d(c, Ra), r;
         if (!o1 && !o0) r = a64_fma( n, m,  a);   /* FMADD  */
         else if (!o1)   r = a64_fma(-n, m,  a);   /* FMSUB  */

@@ -39,15 +39,29 @@ SP-based memory ops are deliberately GENERIC so SP-alignment faults match.
 The frontend refuses these so host semantics can never leak
 (`src/jit/frontend.c`):
 
-- **FMADD/FMLA/FMLS families** — the interpreter uses a genuinely fused
-  `__builtin_fma`; an inline mul+add would double-round.
+- **FMADD/FMLA/FMLS families** — inlined only where the backend can genuinely
+  fuse (a64 replays the guest `fmadd`; x86-64 uses the FMA3 231-forms and
+  declines without them), because the interpreter's `a64_fma` is a single
+  rounding and an unfused mul+add is a *different result*, not a slower one.
+  The x86 backend deliberately carries no mul+add recipe for them, so
+  widening the frontend whitelist cannot silently reintroduce the divergence.
+- **The whole FMAX/FMIN/FMAXNM/FMINNM family**, element-wise and pairwise:
+  ARM's NaN and ±0 ordering is in the interpreter's `fop_d`/`fop_s`, and no
+  host min/max matches it.
 - **FCMPE/FCCMPE** (signaling compares), and half-precision FMADD on x86
-  (double rounding).
+  (double rounding through single).
 - **x86 only** (`be_vop_ok` divergences are per-backend and intentional):
   FCVTZS/FCVTZU to GPR (inline `cvttsd2si` branches would skip host
-  invalid/inexact accumulation), FMAX/FMIN/FMAXNM/FMINNM (SSE min/max NaN/±0
-  ordering differs from ARM), half-precision FMULX/FRECPE/FRSQRTE. The a64
-  backend keeps these native (architecturally exact there).
+  invalid/inexact accumulation), FRINTA (SSE4.1 `roundsd` has no ties-away
+  mode), FMULX and the fused steps FRECPS/FRSQRTS (0*inf special cases), and
+  the half-precision estimate/step/by-element pages. The a64 backend keeps
+  all of these native — it replays the guest instruction, which is
+  architecturally exact there — behind `cpu_has_fp16()` where FEAT_FP16
+  applies.
+- **FRINTX/FRINTI under a non-default rounding mode**: the interpreter honors
+  FPCR.RMode in software while generated code runs in the host's never-changed
+  round-to-nearest, so a nonzero RMode takes the helper (a pre-op gate sharing
+  the NaN gate's slow path).
 - **NaN-gated FP arithmetic** (VC_F2/F3/VF3S…): computed inline, but a NaN
   result discards and re-runs via the helper (`vop_slowpath`) so the
   interpreter's operand-order-dependent NaN propagation is authoritative.

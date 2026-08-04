@@ -13,7 +13,25 @@ the gate pins; the runtime default is now the host wall clock).
 Measured on the firmware+Linux boot used by `tests/run_jit_consist.sh`:
 ~36 MIPS interpreted, ~370 MIPS with `--jit` (≈10×). Steady state runs
 >99.9% of instructions natively; the remaining helper residue
-(~0.03%) is IC IVAU, TLBI and cold sysreg moves.
+(~0.04% over the full 1.6B-instruction boot) is IC IVAU, TLBI and cold
+sysreg moves — `AEJIT_STATS=1` classifies it as `system`, which is the
+profile to expect.
+
+Two things dominated that residue historically, and neither was where a
+reader would have guessed:
+
+- SP-based load/store, because `pd_fill` demoted it for the predecoded
+  tier's sake and the JIT inherited the demotion despite having its own
+  inline SP-alignment check. Every function prologue and epilogue went to
+  the helper: 2.40% of a boot, ~14% of wall clock.
+- The FP families deferred when FP16 was promoted (fused multiply-add,
+  every FRINT mode, the pairwise adds, the by-element forms, the
+  FRECPS/FRSQRTS steps). Invisible in a boot, which barely uses FP, but
+  80% of an FP-heavy loop — closing them took that loop from ~21 to
+  ~140 MIPS.
+
+The lesson for anyone reading `AEJIT_STATS` output: rank by what the target
+*workload* runs, not by what looks unfinished.
 
 Ported from the arm64chroot user-mode emulator (same author; its CPU core
 is a copy of this repo's). Its `docs/jit.md` describes the pipeline in
@@ -159,6 +177,10 @@ decode.c remains authoritative for it.
 - `AEJIT_SLOWMEM=1` — force every memory access through the helpers.
 - `AEJIT_NOFUSE=1` / `AEJIT_NOVRA=1` / `AEJIT_NOFP16=1` — disable memory-
   run fusing / the V-register cache / FP16 inlining.
+- `AEJIT_SSE=2` (x86-64) — answer every capability probe at the SSE2
+  baseline, so the FMA3 and SSE4.1 paths take their declines instead. Worth
+  running the suite and the fuzzer under it: those fallbacks are otherwise
+  only exercised on old hardware nobody tests on.
 
 ## Verification
 
