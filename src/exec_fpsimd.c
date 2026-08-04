@@ -1672,15 +1672,31 @@ static u64 vreg_shift(u64 val, int sh, unsigned e, int sgn, int round, int sat) 
             s64 max = (e >= 64) ? INT64_MAX : (((s64)1 << (e - 1)) - 1);
             s64 min = (e >= 64) ? INT64_MIN : (-((s64)1 << (e - 1)));
             if (sv == 0) return 0;
-            if (sh >= 64) return (u64)(sv > 0 ? max : min);
-            if (sv > 0) return (sv > (max >> sh)) ? (u64)max : ((u64)(sv << sh) & emask);
-            return (sv < (min >> sh)) ? ((u64)min & emask) : ((u64)(sv << sh) & emask);
+            /* A shift by at least the element width overflows for every
+             * nonzero value, and the `min >> sh` bound below cannot say so:
+             * min is held as a 64-bit value, so for e < 64 it only decays to
+             * -1 no matter how large sh gets, and sv == -1 slipped past the
+             * test. SQSHL/SQRSHL of -1 by 42 in a .4s lane then returned 0
+             * (the shifted bits masked away) instead of saturating to
+             * INT32_MIN. Only reachable from the register forms, where the
+             * amount comes from a vector lane and is not bounded by e. */
+            if (sh >= (int)e || sh >= 64) {
+                g_fpexc |= FPSR_QC;
+                return (u64)(sv > 0 ? max : min) & emask;
+            }
+            if (sv > 0) {
+                if (sv > (max >> sh)) { g_fpexc |= FPSR_QC; return (u64)max; }
+                return (u64)(sv << sh) & emask;
+            }
+            if (sv < (min >> sh)) { g_fpexc |= FPSR_QC; return (u64)min & emask; }
+            return (u64)(sv << sh) & emask;
         } else {
             u64 uv = val & emask;
             u64 max = emask;
             if (uv == 0) return 0;
-            if (sh >= 64) return max;
-            return (uv > (max >> sh)) ? max : ((uv << sh) & emask);
+            if (sh >= 64) { g_fpexc |= FPSR_QC; return max; }
+            if (uv > (max >> sh)) { g_fpexc |= FPSR_QC; return max; }
+            return (uv << sh) & emask;
         }
     }
     unsigned rs = (unsigned)-sh;                    /* right shift */

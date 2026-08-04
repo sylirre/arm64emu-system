@@ -365,6 +365,47 @@ _start:
     RDF
     CKX     x13, 0, 79
 
+    /* ---- SQSHL/SQRSHL by an amount that reaches the element width ----
+     * The register forms take the amount from a vector lane, so it is not
+     * bounded by the element width. Shifting -1 in a .4s lane left by 42
+     * used to return 0 (the overflow bits simply masked away) with QC
+     * clear, instead of saturating to INT32_MIN. */
+    ldr     q0, [x21, #96]               /* .4s {-1, -1, -1, -1} */
+    ldr     q1, [x21, #112]              /* .4s {42, 42, 42, 42} */
+    CLRF
+    sqshl   v2.4s, v0.4s, v1.4s
+    RDF
+    CKX     x13, 0x08000000, 80
+    mov     w10, v2.s[0]
+    movz    w22, #0x8000, lsl #16        /* INT32_MIN */
+    movz    x11, #81
+    cmp     w10, w22
+    b.ne    fail
+    CLRF
+    sqrshl  v2.4s, v0.4s, v1.4s
+    RDF
+    CKX     x13, 0x08000000, 82
+    mov     w10, v2.s[3]                 /* every lane, not just lane 0 */
+    movz    x11, #83
+    cmp     w10, w22
+    b.ne    fail
+    ldr     q1, [x21, #128]              /* .4s {1,1,1,1}: -1 << 1 = -2, no QC */
+    CLRF
+    sqshl   v2.4s, v0.4s, v1.4s
+    RDF
+    CKX     x13, 0, 84
+    mov     w10, v2.s[0]
+    movn    w22, #1                      /* -2 */
+    movz    x11, #85
+    cmp     w10, w22
+    b.ne    fail
+    ldr     q0, [x21, #144]              /* .4s {1,1,1,1} unsigned */
+    ldr     q1, [x21, #112]              /* shift by 42 */
+    CLRF
+    uqshl   v2.4s, v0.4s, v1.4s          /* unsigned overflow: QC, UINT32_MAX */
+    RDF
+    CKX     x13, 0x08000000, 86
+
     /* ---- half-precision converts ---- */
     ldr     s0, [x20, #224]              /* 100000.0f: overflows half */
     CLRF
@@ -470,3 +511,7 @@ sdat:                                    /* saturation operands */
     .word 0x80000000, 0x80000000, 0x80000000, 0x80000000  /* +48: INT32_MIN x4 */
     .word 1, 1, 1, 1                                      /* +64: 1 x4 */
     .quad 0x7FFFFFFFFFFFFFFF, 0x7FFFFFFFFFFFFFFF   /* +80: INT64_MAX x2 */
+    .word -1, -1, -1, -1                                  /* +96:  -1 x4 */
+    .word 42, 42, 42, 42                                  /* +112: shift 42 x4 */
+    .word 1, 1, 1, 1                                      /* +128: shift 1 x4 */
+    .word 1, 1, 1, 1                                      /* +144: 1 x4 */
