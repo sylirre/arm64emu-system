@@ -687,7 +687,12 @@ static int fe_lse_cas(IRBlock *ir, u32 insn, u64 pc) {
  * clear) — a store fault exits the block with the monitor still set and
  * Rs unwritten. Counted in ninsns here like any inline insn. */
 static int fe_atomic(IRBlock *ir, u32 insn, u64 pc) {
-    if ((insn & 0x3B200C00u) == 0x38200000u)     /* LSE atomic memops */
+    /* bit 26 (V) MUST be in the mask: the atomic-memory-operation page is
+     * defined for V=0 only, and decode.c reaches ldst_atomic through
+     * `BITS(11,10) == 0 && !V`. Without it a V=1 word — architecturally
+     * unallocated, and UNDEF in the interpreter and the predecoded tier —
+     * was translated here as an LSE atomic and *wrote guest memory*. */
+    if ((insn & 0x3F200C00u) == 0x38200000u)     /* LSE atomic memops */
         return fe_lse_memop(ir, insn, pc);
     if ((insn & 0x3FA00000u) == 0x08A00000u)     /* CAS/CASA/CASL/CASAL (o2=1,o1=1) */
         return fe_lse_cas(ir, insn, pc);

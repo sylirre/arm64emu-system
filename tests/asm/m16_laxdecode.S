@@ -211,6 +211,37 @@ _start:
     movz    x11, #33
     cbnz    x21, fail
 
+    /* The LSE atomic-memory-operation page is defined for V=0 only. The JIT
+     * frontend's classifier left bit 26 out of its mask, so under --jit these
+     * were translated as real atomics and wrote guest memory. x0 points at
+     * RAM so a translated one would be visible, not just wrong. */
+    mov     x0, x5
+    mov     x1, #7
+    movz    x21, #0xffff
+    .inst   0xfc210002                  /* LDADD x, V=1 */
+    movz    x11, #34
+    cbnz    x21, fail
+
+    movz    x21, #0xffff
+    .inst   0xbc210002                  /* LDADD w, V=1 */
+    movz    x11, #35
+    cbnz    x21, fail
+
+    movz    x21, #0xffff
+    .inst   0xfc218002                  /* SWP x, V=1 */
+    movz    x11, #36
+    cbnz    x21, fail
+
+    movz    x21, #0xffff
+    .inst   0xfc211002                  /* LDCLR x, V=1 */
+    movz    x11, #37
+    cbnz    x21, fail
+
+    movz    x21, #0xffff
+    .inst   0xfcbfc002                  /* LDAPR x, V=1 */
+    movz    x11, #38
+    cbnz    x21, fail
+
     /* ================= valid neighbours: must NOT trap (x21 stays 0xffff) === */
 
     movz    x21, #0xffff
@@ -249,6 +280,12 @@ _start:
     csinv   x0, x1, x2, ne              /* CSINV (op=1, o2=0): valid */
     movz    w0, #0, lsl #16             /* 32-bit move-wide hw==1: valid (max) */
     movz    x0, #0, lsl #32             /* 64-bit move-wide hw==2: valid */
+    mov     x0, x5                      /* V=0 LSE neighbours: must all run */
+    .inst   0xf8210002                  /* ldadd x1, x2, [x0] */
+    .inst   0xb8210002                  /* ldadd w1, w2, [x0] */
+    .inst   0xf8218002                  /* swp   x1, x2, [x0] */
+    .inst   0xf8211002                  /* ldclr x1, x2, [x0] */
+    .inst   0xf8bfc002                  /* ldapr x2, [x0] */
     .inst   0x990000a0                  /* stlur w0,[x5]: valid (LRCPC2) */
     .inst   0xd94000a0                  /* ldapur x0,[x5]: valid (LRCPC2) */
     movz    x11, #100
