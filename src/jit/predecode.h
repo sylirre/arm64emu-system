@@ -7,10 +7,12 @@
  * exec_a64, which stays the source of truth.
  *
  * Ported from the arm64chroot user-mode emulator (whose CPU core is a copy
- * of this repo's). The interpreter-side pd_run tier and its per-PC decode
- * cache were deliberately NOT ported: this repo's default interpreter path
- * stays untouched (see README "Performance notes" for why a per-PC cache
- * lost there), so pd_fill's only caller is the -jit translator.
+ * of this repo's). Two engines consume it: the --jit translator, and the
+ * predecoded tier (pd_run, same file), which executes straight out of a
+ * PDEnt. They do not want quite the same classification — the tier applies
+ * one extra demotion in pd_fill_tier, for SP-based memory ops it cannot
+ * alignment-check itself — so pd_fill stays pure classification and each
+ * engine adds what it needs on top.
  *
  * Coverage rule: pd_fill must never classify an encoding this repo's
  * decode.c does not implement (or implements differently) — such encodings

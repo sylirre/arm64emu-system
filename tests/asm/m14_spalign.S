@@ -7,9 +7,12 @@
  * when SP is 16-byte aligned. Runs as a flat -bin image at EL1 (MMU off).
  * x0=0 on success, else a failing-check id.
  *
- * The atomics get their own section: their translators stage the guest base
- * in an IR temp for the Rt-aliases-Rn hazard, and the JIT's inline check
- * (emit_spchk) keys on the base being VREG_SP, so staging used to hide it. */
+ * The battery walks the whole SP-based memory surface, not just one store,
+ * because the three engines reach it three different ways: the interpreter
+ * checks in sp_align_ok, the predecoded tier demotes these to GENERIC so it
+ * inherits that check (pd_fill_tier), and the JIT translates them natively
+ * with an inline check its backends emit (emit_spchk). The writeback forms
+ * carry the extra rule that a faulted access must not write the base back. */
 
 .arch armv8.1-a
 
@@ -65,6 +68,34 @@ _start:
     b.ne    fail2
     .endm
 
+    SPFAULT 63, ldr  x9, [sp]
+    SPFAULT 64, str  x8, [sp, #8]
+    SPFAULT 65, ldur x9, [sp, #4]
+    SPFAULT 66, stp  x8, x9, [sp]
+    SPFAULT 67, ldp  x8, x9, [sp]
+    SPFAULT 68, str  q0, [sp]           /* SIMD&FP forms take the same check */
+    SPFAULT 69, ldr  d0, [sp]
+    SPFAULT 70, ldp  q0, q1, [sp]
+
+    /* Writeback forms: the fault is raised before the access AND before the
+     * base writeback, so SP must come back unchanged. */
+    mov     x19, sp
+    SPFAULT 71, str  x8, [sp, #16]!
+    movz    x11, #72
+    mov     x9, sp
+    cmp     x9, x19
+    b.ne    fail2
+    SPFAULT 73, ldr  x9, [sp], #16
+    movz    x11, #74
+    mov     x9, sp
+    cmp     x9, x19
+    b.ne    fail2
+    SPFAULT 75, stp  x8, x9, [sp, #16]!
+    movz    x11, #76
+    mov     x9, sp
+    cmp     x9, x19
+    b.ne    fail2
+
     /* The atomics reach memory through their own translators, which stage
      * the base in a temp for the Rt-aliases-Rn hazard; an SP base must keep
      * its identity through that or the check is skipped. */
@@ -80,6 +111,18 @@ _start:
 
     /* --- 4. the same forms must all run clean on an aligned SP --- */
     movz    x21, #0xffff
+    ldr     x9, [sp]
+    str     x8, [sp, #8]
+    ldur    x9, [sp, #4]
+    stp     x8, x9, [sp]
+    ldp     x8, x9, [sp]
+    str     q0, [sp]
+    ldr     d0, [sp]
+    ldp     q0, q1, [sp]
+    str     x8, [sp, #16]!              /* the writebacks below net to zero */
+    ldr     x9, [sp], #-16
+    stp     x8, x9, [sp, #16]!
+    ldp     x8, x9, [sp], #-16
     mov     x1, #1                      /* atomics on an aligned SP: clean */
     ldadd   x1, x2, [sp]
     swp     x1, x2, [sp]
@@ -91,6 +134,10 @@ _start:
     movz    x11, #77
     movz    x10, #0xffff
     cmp     x21, x10                    /* none of them may have faulted */
+    b.ne    fail
+    movz    x11, #78
+    mov     x9, sp
+    cmp     x9, x20                     /* the writebacks must net to zero */
     b.ne    fail
 
     movz    x0, #0
