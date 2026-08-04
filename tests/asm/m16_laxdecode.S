@@ -141,6 +141,19 @@ _start:
     movz    x11, #20
     cbnz    x21, fail
 
+    /* opc==3 is the "load signed, 32-bit result" column, allocated only for
+     * the byte and halfword sizes; size==2 (LDRSW is opc==2) and size==3 are
+     * both unallocated. Only size==3 used to be rejected. */
+    movz    x21, #0xffff
+    .inst   0xb9c000a0                  /* size=2 opc=3, unsigned offset */
+    movz    x11, #21
+    cbnz    x21, fail
+
+    movz    x21, #0xffff
+    .inst   0xb8c000a0                  /* size=2 opc=3, unscaled */
+    movz    x11, #22
+    cbnz    x21, fail
+
     /* ================= valid neighbours: must NOT trap (x21 stays 0xffff) === */
 
     movz    x21, #0xffff
@@ -165,6 +178,9 @@ _start:
     ldp     q0, q1, [x5]                /* SIMD&FP pair opc=2: valid (widest) */
     stp     q0, q1, [x5]
     ldp     s0, s1, [x5]                /* SIMD&FP pair opc=0: valid */
+    ldrsw   x0, [x5]                    /* size=2 opc=2: valid */
+    ldrsh   w0, [x5]                    /* size=1 opc=3: valid (32-bit result) */
+    ldrsb   w0, [x5]                    /* size=0 opc=3: valid */
     .inst   0x990000a0                  /* stlur w0,[x5]: valid (LRCPC2) */
     .inst   0xd94000a0                  /* ldapur x0,[x5]: valid (LRCPC2) */
     movz    x11, #100
