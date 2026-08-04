@@ -13,12 +13,38 @@
  *    time skew, -maxinsn overshoot). Checked via CNTVCT_EL0, which this
  *    machine derives from icount, around a block of >128 NOPs (crossing
  *    the block cap so at least one all-NOP block boundary is exercised).
+ * 3. IR budget under-reserve: jit_fe_block stopped filling a block at
+ *    IR_MAX_OPS - 8, a flat reserve one short of DC ZVA's nine ops, so a
+ *    block landing exactly on the boundary appended its terminal IRO_JMP
+ *    one past ops[] and the liveness pass then wrote 8 bytes past the
+ *    IRBlock allocation. Reproduced by 55 DC ZVA (495 ops) + a pad that
+ *    steps the count to exactly 511 + one more DC ZVA.
  *
  * x0=0 on success, else a failing-check id. */
 
 .macro NOP16
     nop; nop; nop; nop; nop; nop; nop; nop
     nop; nop; nop; nop; nop; nop; nop; nop
+.endm
+
+/* One IR-budget probe: 55 DC ZVA, `pad` single-op ALU instructions, one
+ * more DC ZVA. Entered by a branch over 512-byte alignment padding (never
+ * executed): the probe is at most 73 instructions = 292 bytes, so starting
+ * on a 512-byte boundary keeps it inside one 4 KB page whatever its offset,
+ * and the block cannot end early on jit_fe_block's page-crossing check.
+ * That is what makes the op count at the budget boundary exact. The pad
+ * sweep then walks ir->n across it one op at a time. */
+.macro IRBUDGET pad
+    b       991f
+    .balign 512
+991:
+    .rept 55
+    dc      zva, x1
+    .endr
+    .rept \pad
+    add     x2, x2, #1
+    .endr
+    dc      zva, x1
 .endm
 
 .text
@@ -65,6 +91,30 @@ _start:
     sub     x22, x21, x20
     cmp     x22, #144                   /* >= 144 insns must have elapsed */
     b.lt    fail
+
+    /* --- 3. IR budget: sweep ir->n across the block-fill boundary --- */
+    movz    x11, #4
+    movz    x1, #0x4020, lsl #16        /* 64-byte-aligned writable RAM */
+    movz    x3, #0xabcd
+    str     x3, [x1]                    /* DC ZVA must actually clear this */
+    mov     x2, #0
+    subs    xzr, x1, x1                 /* Z=1: a flag window over the sweep */
+    IRBUDGET 12
+    IRBUDGET 13
+    IRBUDGET 14
+    IRBUDGET 15
+    IRBUDGET 16                         /* the one that lands on 511 */
+    IRBUDGET 17
+    IRBUDGET 18
+    IRBUDGET 19
+    IRBUDGET 20
+    b.ne    fail                        /* neither DC ZVA nor ADD writes NZCV */
+    movz    x11, #5
+    cmp     x2, #144                    /* 12+13+...+20 */
+    b.ne    fail
+    movz    x11, #6
+    ldr     x3, [x1]
+    cbnz    x3, fail                    /* the zeroing itself must be intact */
 
     movz    x0, #0
     hlt     #0
