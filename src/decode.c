@@ -35,6 +35,17 @@ static inline bool fp_access_ok(CPU *c) {
 
 /* ---------- arithmetic helpers ---------- */
 
+/* NZCV is computed unconditionally and thrown away when `flags` is NULL, which
+ * is the common non-S case (plain ADD/SUB). That is deliberate, not an
+ * oversight, and it was measured (2026-08-04): `flags` is a runtime value at
+ * every call site -- `S ? &fl : NULL` -- so neither compiler sinks the math
+ * into the store, but hoisting it into an explicit `if (flags)` (the shape
+ * arm64chroot uses, which has to avoid __int128 for its 32-bit build) makes
+ * the default gcc build SLOWER: on a 300M-instruction interpreted ADD loop,
+ * 8.27s -> 9.07s with gcc-13, against 6.91s -> 6.54s with clang. Whole-boot
+ * timings could not resolve either direction above the noise. Static
+ * instruction counts predict the opposite of all of this and should not be
+ * trusted here. Re-measure both compilers before changing the shape. */
 static u64 add_with_carry(u64 x, u64 y, int cin, bool is64, u32 *flags) {
     u64 res;
     u32 N, Z, C, V;
@@ -210,7 +221,7 @@ static void dp_immediate(CPU *c, u32 insn) {
         if (sh) imm <<= 12;
         u64 n = reg_xsp(c, Rn);
         u32 fl;
-        u32 *flp = S ? &fl : NULL;         /* #9: skip NZCV math when discarded */
+        u32 *flp = S ? &fl : NULL;         /* NULL discards NZCV (still computed) */
         u64 r = op ? add_with_carry(n, ~imm, 1, sf, flp)
                    : add_with_carry(n, imm, 0, sf, flp);
         if (S) { c->nzcv = fl; set_x_sz(c, Rd, sf, r); }
@@ -330,7 +341,7 @@ static void dp_register(CPU *c, u32 insn) {
             op2 = shift_reg(reg_x(c, Rm), shift, imm6, sf);
             n = reg_x(c, Rn);
         }
-        u32 *flp = S ? &fl : NULL;         /* #9: skip NZCV math when discarded */
+        u32 *flp = S ? &fl : NULL;         /* NULL discards NZCV (still computed) */
         u64 r = op ? add_with_carry(n, ~op2, 1, sf, flp)
                    : add_with_carry(n, op2, 0, sf, flp);
         if (S) { c->nzcv = fl; set_x_sz(c, Rd, sf, r); }
@@ -365,7 +376,7 @@ static void dp_register(CPU *c, u32 insn) {
             if (BITS(15, 10) == 0) {               /* add/sub with carry */
                 bool op = BIT(30), S = BIT(29);
                 u32 fl;
-                u32 *flp = S ? &fl : NULL; /* #9: skip NZCV math when discarded */
+                u32 *flp = S ? &fl : NULL; /* NULL discards NZCV (still computed) */
                 int cin = (c->nzcv & PS_C) ? 1 : 0;
                 u64 m = reg_x(c, Rm), n = reg_x(c, Rn);
                 u64 r = op ? add_with_carry(n, ~m, cin, sf, flp)
