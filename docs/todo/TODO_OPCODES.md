@@ -33,7 +33,11 @@ quiet/signaling FCMP-vs-FCMPE IOC split (m22).
   FEAT_JSCVT FJCVTZS, FEAT_FLAGM/FLAGM2 CFINV/RMIF/SETF8/SETF16/AXFLAG/XAFLAG.
   Along the way: the RMIF/SETF-as-ADC misdecode (bits[15:10] now checked), the
   FMLAL-space and by-element-U lax decodes, vector FRINTX/FRINTI ignoring
-  FPCR.RMode, and scalar FCVTNS rounding ties away instead of to even.
+  FPCR.RMode, and scalar FCVTNS rounding ties away instead of to even. (That
+  last one covered the FP→GPR form only; the AdvSIMD scalar `Dd,Dn` form kept
+  its own open-coded convert — ties-away and no FPToFixed flags — until
+  2026-08-04, when it was routed through the same `fround_mode` +
+  `fcvt_to_int` pair as the vector page.)
 - **The 2026-07-18 late batch** (`m21_mops.S`, `m22_fpsr.S`): **FEAT_MOPS**
   CPYx/CPYFx/SETx — Option A register forms matching qemu stage for stage
   (P to the page boundary, M whole pages, E the tail), backward-overlap
@@ -41,9 +45,16 @@ quiet/signaling FCMP-vs-FCMPE IOC split (m22).
   the EC 0x27 mismatch exception, SCTLR_EL1.MSCEn EL0 gating; and **FPSR
   cumulative flags** (former §6 items 4+7): IOC/DZC/OFC/UFC/IXC via lazy
   sticky host-flag accumulation shared by all three engines, sticky QC on
-  every saturating clamp, FCMPE/FCCMPE signaling-vs-quiet IOC, FRINTX IXC,
+  the saturating clamps, FCMPE/FCCMPE signaling-vs-quiet IOC, FRINTX IXC,
   convert/estimate/f16-narrow flags, and the FRECPS/FRSQRTS fused step with
-  the 0*inf -> 2.0/1.5 special case.
+  the 0*inf -> 2.0/1.5 special case. ("Every clamp" was optimistic: the ones
+  reached through the shared `sat_*` helpers raised QC, but UQXTN, UQSHRN/
+  UQRSHRN, SQSHRUN/SQRSHRUN, SQSHLU, SQDMULL and SUQADD's 64-bit arm clamped
+  inline and silently. Closed 2026-08-04 with two value bugs found alongside:
+  SQABS/SQNEG of INT64_MIN returned INT64_MIN instead of INT64_MAX, and
+  SQSHL/SQRSHL by at least the element width returned 0 instead of
+  saturating — the negative bound `min >> sh` decays to -1 and never reaches
+  0, so a source of exactly -1 slipped past it. See `m22_fpsr.S` 63-86.)
 
 **How gaps surface at runtime:** FP/SIMD fall-throughs log
 `[fpsimd] UNIMPL 0x… at pc=…`; integer/system fall-throughs log only with `-d`.
@@ -104,13 +115,35 @@ intentionally UNDEF and unadvertised.
 
 ## 5. Lax decodes: unallocated encodings that still execute *something*
 
-The corruption-risk cases are all fixed (CAS-as-LDAR, three-same-FP→FADD,
-ldst_pair opc3, RMIF/SETF-as-ADC, FMLAL-space-as-compare/FADD, by-element
-U-field ignores). What remains is cheap-insurance polish: `INS (general)`/
-vector-copy and a few SIMD groups still match on fewer fixed bits than the
-spec, so some unallocated encodings "do something plausible" instead of a
-clean UNDEF (all minor, differential-noise only). `m16_laxdecode.S` holds the
-regression battery for everything already tightened.
+The corruption-risk cases are fixed (CAS-as-LDAR, three-same-FP→FADD,
+ldst_pair opc3 in **both** halves, RMIF/SETF-as-ADC, FMLAL-space-as-compare/
+FADD, by-element U-field ignores). `m16_laxdecode.S` holds the regression
+battery for everything tightened.
+
+The 2026-08-04 sweep against arm64chroot closed the rest of the known list
+and found one more corruption case, which is the reason to keep treating
+"does something plausible" as a severity question rather than polish:
+
+- **SIMD&FP load/store pair with `opc==3`** (corruption). The integer half
+  rejected it; the SIMD&FP half derived `scale = opc + 2`, i.e. a 32-byte
+  element for a 16-byte-max vector access, and handed that size to
+  `mem_read`/`mem_write` — a 32-byte memcpy into an 8-byte stack slot one way
+  and 24 bytes of emulator stack into guest memory the other. Reachable from
+  a single guest word (`0xED4000A0`).
+- **`opc==3` with `size==2`** in the single-register family (the "load
+  signed, 32-bit result" column exists only for byte and halfword).
+- **DP-immediate/DP-register RES0 fields** never checked: bitfield `opc==3`
+  and `N != sf`, EXTR bits[30:29], add/sub extended-register bits[23:22],
+  DP-3-source bits[30:29], CCMP `S`/bit10/bit4, CSEL `S`/bit11, and the
+  32-bit move-wide `hw >= 2` in `pd_fill`.
+- **The 0xce crypto page leaking into the AdvSIMD vector handlers** (wrong
+  values, not merely lax): nine dispatch guards matched bits[28:24]==0x0e
+  without testing bit31, which is RES0 across the vector page, and the
+  SHA3/SHA512 page shares those bits. BCAX with Rm in {0,1} and Ra % 4 == 2
+  executed as REV64 of Vn. See `m7_crypto.S` checks 92-99.
+
+Every probe was cross-checked against qemu-aarch64 with a valid neighbour to
+catch over-tightening.
 
 ---
 

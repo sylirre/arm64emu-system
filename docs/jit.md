@@ -24,6 +24,13 @@ per-block greedy register allocation and lazy NZCV in host flags
 cache, and the W^X fallback (RWX mmap → dual-mapped memfd → interpreter).
 This document covers what is *different* here.
 
+One invariant worth restating because it is easy to break silently: a guest
+instruction expands to at most `IR_MAX_OPS_PER_INSN` IR ops (`ir.h`), and
+`jit_fe_block` must leave that much room *plus* one slot for the terminal
+`IRO_JMP` before translating another instruction. The bound is derived from
+`DCZVA_STORES`, the same constant the DC ZVA expansion counts with, because
+DC ZVA is the outlier that broke the original guessed reserve of 8.
+
 ## Full-system deltas vs the donor
 
 Single CPU, single thread: the donor's per-thread caches, thread registry

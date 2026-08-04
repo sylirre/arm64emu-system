@@ -1,7 +1,7 @@
 # Engine parity: interpreter vs the predecoded tier vs `--jit`
 
 Audit of how the three execution engines stay semantically identical, what is
-allowed to differ, and how parity is verified. Snapshot date: 2026-07-19.
+allowed to differ, and how parity is verified. Snapshot date: 2026-08-04.
 Companion documents: `docs/jit.md` (JIT internals), `docs/pd.md` (the default
 predecoded tier).
 
@@ -52,12 +52,24 @@ The frontend refuses these so host semantics can never leak
   result discards and re-runs via the helper (`vop_slowpath`) so the
   interpreter's operand-order-dependent NaN propagation is authoritative.
   These classes are "self-counting" (fast path bumps icount inline; the
-  helper counts on the slow arm).
+  helper counts on the slow arm) — being NaN-gated and being in
+  `IRBlock.ninsns` are mutually exclusive, or a gated instruction is counted
+  twice. `vop_self_counted()` in `ir.h` is the single predicate the frontend
+  and both backends ask; it takes the instruction word because VC_F1 is
+  partly gated (FSQRT is, FMOV/FABS/FNEG are not).
 - **CASP**, byte/half signed LDSMAX/LDSMIN/LDUMAX/LDUMIN, **LD2/3/4** and
   single-lane vector loads, **MOPS** (EC 0x27 state machine), invalid
   bitfield/logical-imm encodings (helper raises the UNDEF), every `0xD5`
   system instruction outside the hot whitelist (may change translation
   state; ends the block), SVC/HVC/BRK/ERET.
+
+A classifier mask that is *wider* than the interpreter's dispatch gate breaks
+the structural guarantee outright: the punted-surface argument only holds if
+everything the interpreter UNDEFs is also refused here. `fe_atomic` matched
+the LSE memory-operation page without bit 26 (V), so V=1 words — unallocated,
+and UNDEF in both other engines — were translated as atomics and *wrote guest
+memory*. When adding or widening a frontend key, copy the interpreter's
+predicate field for field rather than an approximation of it.
 
 Bug-for-bug quirks preserved by construction: address-only exclusive monitor
 (no size check), faulting ST*XR leaves the monitor set, CAS space stays on
@@ -93,17 +105,18 @@ lazily by `fpsr_sync` (`src/exec_fpsimd.c`) only when the guest reads FPSR.
 | full-boot log gate | `make test-jit-full` / `make test-pd-full` (`tests/run_bootlog_gate.sh`) | 1.6B-insn boot log identical after timestamp normalization — covers the whole boot, not just the UEFI phase the checkpoints sit in; **mandatory for frontend changes** |
 | cross-engine fuzzing | `make fuzz-engines` (`tests/run_fuzz_engines.sh` + `tests/scripts/fuzz_gen.c`) | random blocks over the inlined surface, interpreter (`--no-pd`) vs the predecoded tier vs `--jit` vs `--jit`+SLOWMEM/NOFUSE/NOVRA; phase 1 compares the HLT line natively-executed, phase 2 stops at the exact pre-HLT icount and compares the full register dump |
 | a64 backend | `make test-jit-a64` (and `AE_RUNNER=qemu-aarch64 AE_EMU=./arm64emu-a64 tests/run_fuzz_engines.sh`) | the second backend stays executable and byte-identical under qemu-user |
-| regression pins | `tests/asm/m23_jitpar.S` | the two fuzzer-found bugs below stay fixed, engine-agnostic |
+| regression pins | `tests/asm/m23_jitpar.S` | the fuzzer-found bugs below stay fixed, engine-agnostic |
 
 Bisection knobs: `AEJIT_PDMAX` / `AEJIT_SLOWMEM` / `AEJIT_NOFUSE` /
 `AEJIT_NOVRA` / `AEJIT_DUMP` (docs/jit.md) and `AEPD_MAX=N` for the predecoded tier
 (dispatch only PD ops ≤ N natively; 0 = pure interpreter).
 
-## Case studies: what the fuzzer caught (2026-07-19)
+## Case studies: what the fuzzer caught (2026-07-19, 2026-08-04)
 
-Both bugs passed every pre-existing gate (the checkpoints sit in the UEFI
+All three bugs passed every pre-existing gate (the checkpoints sit in the UEFI
 phase; the boot-log gate strips the timestamps that would have shown drift).
-15/2000 seeds diverged; both root causes were x86-JIT-only.
+15/2000 seeds diverged in the first run and 81/200 in the second; every root
+cause was x86-JIT-only.
 
 1. **Lazy-NZCV hole after FCSEL** (`backend_x86_64.c`, VC_FCSEL). An S-op
    whose next flag-relevant op is a consumer keeps NZCV lazily in host
@@ -119,6 +132,14 @@ phase; the boot-log gate strips the timestamps that would have shown drift).
    were missing from icount: guest time (CNTVCT derives from icount) ran
    slow, and `--max-insn` overshot (a 600-NOP image blew ~200 insns past the
    limit). Fix: count them.
+3. **FSQRT counted twice when its NaN gate fired** (`backend_x86_64.c`,
+   VC_F1). The gated classes are self-counting precisely so the slow arm's
+   `jit_exec1` is the only counter; VC_F1 was NaN-gated (FSQRT of a negative
+   is invalid, and the host DefaultNaN has the wrong sign) yet also sat in
+   `ir->ninsns`, so every NaN-producing FSQRT retired once and counted twice.
+   Same guest-visible surface as bug 2, opposite sign. Fix: `vop_self_counted`
+   (`ir.h`) is now the one predicate all three sites consult, and it takes the
+   instruction word because only VC_F1's FSQRT arm is gated.
 
 Lesson encoded in the matrix above: the structural guarantee makes the
 *punted* surface safe by construction, so adversarial coverage only needs to
