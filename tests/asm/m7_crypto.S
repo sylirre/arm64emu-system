@@ -408,6 +408,48 @@ _start:
     umov    x0, v0.d[1]
     CKX     x0, 0xcdefcdefcdefcdef, 91
 
+    /* Dispatch fidelity: bit31 is RES0 across the AdvSIMD vector page, but
+     * the 0xce crypto page has bits[28:24] == 0x0e too. Guards that did not
+     * test bit31 stole crypto words whose remaining fields happened to match,
+     * which depends on the REGISTER NUMBERS — so these encodings differ from
+     * the ones above only in Rm/Ra. simd_two_misc wanted Rm in {0,1} with
+     * bit11 set and bit10 clear (Ra % 4 == 2) and returned REV64 of Vn;
+     * simd_across wanted the same Ra with Rm in {16,17}. Same operands as
+     * check 78/79, so a stolen word is visible as a different value.
+     * Reference values from qemu-aarch64 -cpu max. */
+    adr     x10, sha3_vA; ld1 {v1.2d}, [x10]
+    adr     x10, sha3_vB; ld1 {v0.2d}, [x10]
+    adr     x10, sha3_vC; ld1 {v2.2d}, [x10]
+    adr     x10, sha3_vC; ld1 {v6.2d}, [x10]
+    adr     x10, sha3_vB; ld1 {v16.2d}, [x10]
+
+    .inst   0xce200820                 /* bcax v0,v1,v0,v2   (Rm=0,  Ra=2) */
+    umov    x0, v0.d[0]
+    CKX     x0, 0x1032547698badcfe, 92
+    umov    x0, v0.d[1]
+    CKX     x0, 0xdcfe98ba54761032, 93
+
+    adr     x10, sha3_vB; ld1 {v0.2d}, [x10]
+    .inst   0xce211820                 /* bcax v0,v1,v1,v6   (Rm=1,  Ra=6) */
+    umov    x0, v0.d[0]
+    CKX     x0, 0x0022002288aa88aa, 94
+    umov    x0, v0.d[1]
+    CKX     x0, 0x5454101054541010, 95
+
+    adr     x10, sha3_vB; ld1 {v0.2d}, [x10]
+    .inst   0xce300820                 /* bcax v0,v1,v16,v2  (Rm=16, Ra=2) */
+    umov    x0, v0.d[0]
+    CKX     x0, 0x1032547698badcfe, 96
+    umov    x0, v0.d[1]
+    CKX     x0, 0xdcfe98ba54761032, 97
+
+    adr     x10, sha3_vB; ld1 {v0.2d}, [x10]
+    .inst   0xce608820                 /* sha512su1 v0,v1,v0 (Rm=0) */
+    umov    x0, v0.d[0]
+    CKX     x0, 0x92c5682fddf6539c, 98
+    umov    x0, v0.d[1]
+    CKX     x0, 0xb7a0fe36887012c9, 99
+
     movz    x0, #0
     hlt     #0
 fail:
