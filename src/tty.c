@@ -9,6 +9,7 @@
 #include <termios.h>
 #include <signal.h>
 #include <sys/ioctl.h>
+#include <poll.h>
 #include <errno.h>
 
 static struct termios saved_tio;
@@ -65,6 +66,17 @@ void tty_raw_enable(void) {
 int tty_getchar(void) {
     static int esc_pending = 0;
     unsigned char ch;
+    /* Check readiness before reading: O_NONBLOCK is set by tty_raw_enable(),
+     * which returns early when stdin is not a tty, so on every other kind of
+     * stdin the read below is a blocking one. An open-but-idle stdin — a pipe,
+     * FIFO or socket, which is what `producer | arm64emu` or a CI runner hands
+     * us — would then park the whole emulator inside a device RX poll: the
+     * guest stops retiring instructions, so --max-insn can never fire and only
+     * a signal ends the run. /dev/null and a plain file are always ready and
+     * read as EOF, so they never reached that path, which is why the boot
+     * harnesses (all of which pin </dev/null) never saw it. */
+    struct pollfd pfd = { .fd = STDIN_FILENO, .events = POLLIN };
+    if (poll(&pfd, 1, 0) <= 0) return -1;
     if (read(STDIN_FILENO, &ch, 1) != 1) return -1;
     if (esc_pending) {
         esc_pending = 0;
