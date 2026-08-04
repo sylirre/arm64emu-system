@@ -272,6 +272,52 @@ _start:
     RDF
     CKX     x13, 0x08000000, 52
 
+    /* ---- QC: saturating negation at the 64-bit element width ----
+     * Negating INT64_MIN is the one case the generic clamp cannot catch:
+     * the negation wraps back to INT64_MIN, which is exactly the clamp's
+     * lower bound, so it used to pass through as INT64_MIN with no QC. */
+    ldr     x21, =sdat
+    ldr     x22, =0x7FFFFFFFFFFFFFFF     /* CKX clobbers x9/x11, so not those */
+    ldr     q0, [x21, #0]                /* .2d {INT64_MIN, INT64_MIN} */
+    CLRF
+    sqneg   v2.2d, v0.2d
+    RDF
+    CKX     x13, 0x08000000, 63
+    mov     x10, v2.d[0]
+    movz    x11, #64
+    cmp     x10, x22
+    b.ne    fail
+    CLRF
+    sqabs   v2.2d, v0.2d
+    RDF
+    CKX     x13, 0x08000000, 65
+    mov     x10, v2.d[1]                 /* both lanes, not just lane 0 */
+    movz    x11, #66
+    cmp     x10, x22
+    b.ne    fail
+    CLRF
+    sqneg   d2, d0                       /* scalar form takes its own path */
+    RDF
+    CKX     x13, 0x08000000, 67
+    mov     x10, v2.d[0]
+    movz    x11, #68
+    cmp     x10, x22
+    b.ne    fail
+    CLRF
+    sqabs   d2, d0
+    RDF
+    CKX     x13, 0x08000000, 69
+    ldr     q1, [x21, #16]               /* .2d {1, 1}: must NOT saturate */
+    CLRF
+    sqneg   v2.2d, v1.2d
+    RDF
+    CKX     x13, 0, 70
+    mov     x10, v2.d[0]
+    movn    x22, #0                      /* -1 */
+    movz    x11, #71
+    cmp     x10, x22
+    b.ne    fail
+
     /* ---- half-precision converts ---- */
     ldr     s0, [x20, #224]              /* 100000.0f: overflows half */
     CLRF
@@ -368,3 +414,9 @@ fdat:
     .hword 0x0001                        /* +236: half min subnormal */
     .hword 0                             /* +238: pad */
     .quad 0x3FF0000000010000             /* +240: 1 + 2^-40 */
+
+.balign 16
+sdat:                                    /* saturation operands */
+    .quad 0x8000000000000000, 0x8000000000000000   /* +0:  INT64_MIN x2 */
+    .quad 1, 1                                     /* +16: 1 x2 */
+    .quad 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF   /* +32: -1 x2 */
