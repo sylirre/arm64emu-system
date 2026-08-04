@@ -104,7 +104,7 @@ int g_heaptrack = 0;
 #define HT_ENVIRON_FOFF 0xc2008
 
 #define HT_BUCKETS (1u << 20)
-#define HT_NODES   (1u << 21)
+#define HT_NODES   (1 << 21)     /* signed: compared against int ht_node_top */
 static int *ht_bucket;                 /* head node index, or -1 */
 static struct htnode { u64 ttbr, base, size, site; int next; } *ht_node;
 static int ht_free_head = -1, ht_node_top = 0;
