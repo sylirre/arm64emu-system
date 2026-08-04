@@ -126,6 +126,21 @@ _start:
     movz    x11, #18
     cbnz    x21, fail
 
+    /* SIMD&FP load/store pair with opc==3: unallocated. Decoding it as a
+     * pair derived scale=opc+2, i.e. a 32-byte "element" handed to a
+     * 16-byte-max vector access — a host buffer overflow, not just a
+     * wrong result. Both directions, since only the load smashed the
+     * emulator's stack while the store leaked it into guest memory. */
+    movz    x21, #0xffff
+    .inst   0xed4000a0                  /* LDP V-form opc=3, [x5] */
+    movz    x11, #19
+    cbnz    x21, fail
+
+    movz    x21, #0xffff
+    .inst   0xed0000a0                  /* STP V-form opc=3, [x5] */
+    movz    x11, #20
+    cbnz    x21, fail
+
     /* ================= valid neighbours: must NOT trap (x21 stays 0xffff) === */
 
     movz    x21, #0xffff
@@ -147,6 +162,9 @@ _start:
     pmul    v0.16b, v1.16b, v2.16b      /* PMUL .16b: valid */
     ldr     q0, [x5]                    /* vector LDR Q-form (size=0): valid */
     ldr     d0, [x5]                    /* vector LDR D-form: valid */
+    ldp     q0, q1, [x5]                /* SIMD&FP pair opc=2: valid (widest) */
+    stp     q0, q1, [x5]
+    ldp     s0, s1, [x5]                /* SIMD&FP pair opc=0: valid */
     .inst   0x990000a0                  /* stlur w0,[x5]: valid (LRCPC2) */
     .inst   0xd94000a0                  /* ldapur x0,[x5]: valid (LRCPC2) */
     movz    x11, #100
