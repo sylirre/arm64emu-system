@@ -125,6 +125,17 @@ Bisection knobs: `AEJIT_PDMAX` / `AEJIT_SLOWMEM` / `AEJIT_NOFUSE` /
 `AEJIT_NOVRA` / `AEJIT_DUMP` (docs/jit.md) and `AEPD_MAX=N` for the predecoded tier
 (dispatch only PD ops ≤ N natively; 0 = pure interpreter).
 
+Every harness bounds each emulator run with `timeout` (`AE_TIMEOUT`, seconds:
+60 for the asm suite and the fuzzer, 900 for the checkpoints, 1800 for the
+boot-log gate) and pins `</dev/null`. Both matter because a gate that stops
+retiring instructions cannot be caught by `--max-insn` — that limit is only
+ever reached by *executing* — so before this it hung the suite silently and,
+in the three harnesses that background their two runs, outlived the harness as
+an orphan asleep at 0% CPU. Two ways in existed: a guest that halts in WFI/WFE
+with nothing left to wake it (the emulator now stops and dumps, see
+`Machine.deadlock`), and an idle stdin inherited from the caller, which the
+UART RX poll used to block on because `O_NONBLOCK` is only set for a tty.
+
 ## Case studies: what the fuzzer caught (2026-07-19, 2026-08-04)
 
 All three bugs passed every pre-existing gate (the checkpoints sit in the UEFI

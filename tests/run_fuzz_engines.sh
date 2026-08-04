@@ -10,7 +10,8 @@
 #
 # Env: AE_SEEDS (default 200), AE_NINSNS (0 = seed-derived size sweep),
 #      AE_EMU / AE_RUNNER as in run_tests.sh, CC for the generator build,
-#      AE_FUZZ_KEEP=dir to keep failing images (default tests/fuzz_failures).
+#      AE_FUZZ_KEEP=dir to keep failing images (default tests/fuzz_failures),
+#      AE_TIMEOUT the per-run wall-clock ceiling (seconds).
 set -u
 # The runtime default is the host wall clock (AE_RTCLOCK=1); pin the deterministic
 # instruction-count clock so every engine config is byte-identical even when a
@@ -21,6 +22,10 @@ EMU="${AE_EMU:-$ROOT/arm64emu}"
 SEEDS=${AE_SEEDS:-200}
 NINSNS=${AE_NINSNS:-0}
 KEEP="${AE_FUZZ_KEEP:-$ROOT/tests/fuzz_failures}"
+# Ceiling per run: a fuzzed block is 200k instructions at most, so this only
+# fires on one that has stopped retiring. Without it such a seed wedges the
+# whole sweep with no output rather than reporting a mismatch.
+AE_TIMEOUT="${AE_TIMEOUT:-60}"
 [ -x "$EMU" ] || { echo "build arm64emu first"; exit 1; }
 
 OUT="$(mktemp -d)"; trap 'rm -rf "$OUT"' EXIT
@@ -38,7 +43,7 @@ run_cfg() { # $1=cfg $2=bin $3=outprefix
         jit_nofuse)  flags=--jit; envs="AEJIT_NOFUSE=1" ;;
         jit_novra)   flags=--jit; envs="AEJIT_NOVRA=1" ;;
     esac
-    env $envs ${AE_RUNNER:-} "$EMU" $flags --bin "$2@0x40000000" \
+    timeout -k 5 "$AE_TIMEOUT" env $envs ${AE_RUNNER:-} "$EMU" $flags --bin "$2@0x40000000" \
         --max-insn "${MAXI_OVERRIDE:-200000}" \
         </dev/null >"$3.out" 2>"$3.err"
 }

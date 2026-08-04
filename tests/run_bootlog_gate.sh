@@ -16,6 +16,7 @@
 # Usage: run_bootlog_gate.sh [--jit|--pd]        (default --jit)
 # Env: AE_BIOS, AE_KERNEL, AE_INITRD override the images;
 #      AE_MAXINSN overrides the stopping point (default 1600000000);
+#      AE_TIMEOUT is the per-run wall-clock ceiling (seconds);
 #      AE_EMU / AE_RUNNER: alternate binary and launcher prefix.
 set -u
 # The runtime default is the host wall clock (AE_RTCLOCK=1); pin the deterministic
@@ -37,19 +38,27 @@ BIOS=${AE_BIOS:-/usr/share/qemu-efi-aarch64/QEMU_EFI.fd}
 KERNEL=${AE_KERNEL:-$HOME/Image.gz}
 INITRD=${AE_INITRD:-$HOME/initrd}
 MAXI=${AE_MAXINSN:-1600000000}
+# Ceiling per boot: both runs are backgrounded, so a boot that stops making
+# progress would hang `wait` forever and outlive the harness as an orphan.
+AE_TIMEOUT="${AE_TIMEOUT:-1800}"
 
 [ -x "$EMU" ] || { echo "build arm64emu first"; exit 1; }
 [ -r "$BIOS" ] || { echo "SKIP: no firmware at $BIOS"; exit 0; }
 [ -r "$KERNEL" ] && [ -r "$INITRD" ] || { echo "SKIP: no kernel/initrd"; exit 0; }
 
 OUT="$(mktemp -d)"; trap 'rm -rf "$OUT"' EXIT
-${AE_RUNNER:-} "$EMU" --no-pd --bios "$BIOS" --kernel "$KERNEL" --initrd "$INITRD" \
+timeout -k 5 "$AE_TIMEOUT" ${AE_RUNNER:-} "$EMU" --no-pd --bios "$BIOS" --kernel "$KERNEL" --initrd "$INITRD" \
     --append console=ttyAMA0 --max-insn "$MAXI" \
-    </dev/null >"$OUT/i.out" 2>"$OUT/i.err" &
-${AE_RUNNER:-} "$EMU" $CMP --bios "$BIOS" --kernel "$KERNEL" --initrd "$INITRD" \
+    </dev/null >"$OUT/i.out" 2>"$OUT/i.err" & pi=$!
+timeout -k 5 "$AE_TIMEOUT" ${AE_RUNNER:-} "$EMU" $CMP --bios "$BIOS" --kernel "$KERNEL" --initrd "$INITRD" \
     --append console=ttyAMA0 --max-insn "$MAXI" \
-    </dev/null >"$OUT/j.out" 2>"$OUT/j.err" &
-wait
+    </dev/null >"$OUT/j.out" 2>"$OUT/j.err" & pj=$!
+wait "$pi"; ri=$?
+wait "$pj"; rj=$?
+if [ "$ri" = 124 ] || [ "$ri" = 137 ] || [ "$rj" = 124 ] || [ "$rj" = 137 ]; then
+    echo "FAIL bootlog gate ($FLAG): no exit within ${AE_TIMEOUT}s"
+    exit 1
+fi
 
 # Strip printk timestamp prefixes and embedded clock-derived stamps (the
 # kernel audit line carries audit(<secs.ms>:<serial>) read from the timer, so

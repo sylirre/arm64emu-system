@@ -11,6 +11,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # AE_EMU: alternate emulator binary; AE_RUNNER: launcher prefix (e.g.
 # qemu-aarch64 for the cross-built AArch64-backend binary).
 EMU="${AE_EMU:-$ROOT/arm64emu}"
+# Wall-clock ceiling per test. These images retire at most 100k instructions,
+# so seconds is already absurd — the point is that a test which stops retiring
+# altogether (a guest that halts, a runaway loop) becomes a FAIL instead of
+# wedging the suite forever with no output. AE_TIMEOUT raises it for a slow
+# AE_RUNNER (qemu-aarch64).
+AE_TIMEOUT="${AE_TIMEOUT:-60}"
 ASM="$ROOT/tests/asm"
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
@@ -45,8 +51,14 @@ for src in "$ASM"/*.S; do
                 run=(${AE_RUNNER:-} "$EMU" ${EMU_FLAGS:-} --bios "$bin" --max-insn 100000) ;;   # gic/timer/uart need platform_build
         *)      run=(${AE_RUNNER:-} "$EMU" ${EMU_FLAGS:-} --bin "$bin@$LOAD" --max-insn 100000) ;;
     esac
-    res="$("${run[@]}" 2>&1 | grep -oE 'x0=0x[0-9a-f]+' | head -1)"
-    if [ "$res" = "x0=0x0" ]; then
+    # </dev/null like the boot harnesses: an idle stdin inherited from the
+    # caller (a pipe from a CI runner, `producer | make test`) is a wake source
+    # the UART RX poll of a --bios test will wait on.
+    out="$(timeout -k 5 "$AE_TIMEOUT" "${run[@]}" </dev/null 2>&1)"; rc=$?
+    res="$(printf '%s\n' "$out" | grep -oE 'x0=0x[0-9a-f]+' | head -1)"
+    if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+        echo "FAIL $name (no exit within ${AE_TIMEOUT}s)"; fail=$((fail+1))
+    elif [ "$res" = "x0=0x0" ]; then
         echo "PASS $name"; pass=$((pass+1))
     else
         echo "FAIL $name ($res)"; fail=$((fail+1))
