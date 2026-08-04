@@ -215,10 +215,13 @@ static void fill_ldst(PDEnt *e, u32 insn) {
 
     if (b2927 == 0x3 && BITS(25, 24) == 0) {         /* literal */
         unsigned opc = BITS(31, 30);
-        if (BIT(26)) return;                         /* coverage: SIMD&FP literal
-                                                      * stays GENERIC (no
-                                                      * PD_LDRLITV op here);
-                                                      * decode.c runs it */
+        if (BIT(26)) {                               /* SIMD&FP: LDR St/Dt/Qt */
+            if (opc == 3) return;                    /* UNALLOCATED -> GENERIC -> UNDEF */
+            e->op  = PD_LDRLITV;
+            e->rm  = (u8)(4u << opc);                /* byte count 4/8/16 */
+            e->imm = (sign_extend(BITS(23, 5), 19) << 2);
+            return;
+        }
         if (opc == 0) e->op = PD_LDRLIT32;
         else if (opc == 1) e->op = PD_LDRLIT64;
         else if (opc == 3) e->op = PD_NOP;           /* PRFM literal */
@@ -1414,6 +1417,15 @@ L_LDR64RO:
         NEXT;
     }
 
+    /* Handlers that touch V registers execute natively (no exec_a64 fallback),
+     * so they must apply the CPACR_EL1.FPEN guard themselves; cur_insn_pc is
+     * already set by the dispatch preamble, and NEXT follows the redirected
+     * c->pc into the vector. FP *data-processing* needs no guard here: it is
+     * PD_GENERIC and exec_a64's dispatch guard covers it. */
+#define FP_GUARD() do { \
+        if (__builtin_expect(c->fp_trapped, 0)) { cpu_fp_trap(c); NEXT; } \
+    } while (0)
+
     /* ---- literal ---- */
 L_LDRLIT64:
     {
@@ -1429,6 +1441,7 @@ L_LDRLIT32:
     }
 L_LDRLITV:
     {   /* SIMD&FP literal: rm = byte count 4/8/16; zero-extends into V[rd] */
+        FP_GUARD();
         V128 v; v.d[0] = 0; v.d[1] = 0;
         u64 va = c->cur_insn_pc + e->imm;
         if (e->rm == 16) { if (mem_read128(c, va, &v)) c->v[e->rd] = v; }
@@ -1468,14 +1481,8 @@ L_STP64:
     }
 
     /* ---- FP/SIMD register load/store (rd = Vt) ----
-     * These execute natively (no exec_a64 fallback), so they must apply the
-     * CPACR_EL1.FPEN guard themselves; cur_insn_pc is already set by the
-     * dispatch preamble, and NEXT follows the redirected c->pc into the
-     * vector. FP *data-processing* needs no guard here: it is PD_GENERIC and
-     * exec_a64's dispatch guard covers it. */
-#define FP_GUARD() do { \
-        if (__builtin_expect(c->fp_trapped, 0)) { cpu_fp_trap(c); NEXT; } \
-    } while (0)
+     * FP_GUARD (defined above the literal section, which has a V-register form
+     * of its own) applies CPACR_EL1.FPEN to each of these. */
 L_LDRQ:
     {
         FP_GUARD();

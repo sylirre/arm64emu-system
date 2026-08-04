@@ -1073,6 +1073,9 @@ static bool g_fe_fptrap;
  * groups (0x7/0xf) or a V=1 load/store family ((grp&5)==4 covers 4/6/c/e —
  * decode.c's loads_stores groups, including the AdvSIMD structure forms). */
 static bool fe_fp_insn(u8 op, u32 insn) {
+    /* PD_LDRLITV writes a V register but is grouped with the literal family,
+     * outside the PD_LDRQ..PD_NOPS_ block the range test below covers. */
+    if (op == PD_LDRLITV) return true;
     if (op >= PD_LDRQ && op < PD_NOPS_) return true;
     if (op != PD_GENERIC) return false;
     unsigned grp = (insn >> 25) & 0xf;

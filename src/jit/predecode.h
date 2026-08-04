@@ -118,9 +118,10 @@ enum {
     PD_STR64RO, PD_STR32RO, PD_STRBRO, PD_STRHRO,
     /* literal */
     PD_LDRLIT64, PD_LDRLIT32,
-    PD_LDRLITV,          /* coverage: never produced — decode.c UNDEFs the
-                          * SIMD&FP literal form (ldst_literal V=1), so it
-                          * stays GENERIC to reproduce that UNDEF */
+    PD_LDRLITV,          /* SIMD&FP literal (rd = Vt, rm = byte count 4/8/16).
+                          * The one V-register id outside the FP/SIMD block
+                          * below — fe_fp_insn() names it explicitly so the
+                          * CPACR_EL1.FPEN gate still catches it. */
 
     /* integer pairs (rm = Rt2, imm = scaled offset) */
     PD_LDP64, PD_LDP64PRE, PD_LDP64POST,

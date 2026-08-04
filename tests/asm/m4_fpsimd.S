@@ -256,8 +256,42 @@ _start:
     fmov    w0, s1
     CKX     x0, 0xffc0aaaa, 48
 
+    /* LDR (literal), SIMD&FP -- the S/D/Q forms, which load PC-relative and
+     * zero-extend into V[t]. The predecoded tier and the JIT run these
+     * natively (PD_LDRLITV), so pin the bits they produce; m18 check 9 covers
+     * the CPACR_EL1.FPEN trap that both native paths have to apply. */
+    ldr     s6, fplit4
+    umov    x0, v6.d[0]
+    CKX     x0, 0x89abcdef, 49          /* 32-bit form: upper bits cleared */
+    umov    x0, v6.d[1]
+    CKX     x0, 0, 50
+
+    ldr     d7, fplit8
+    umov    x0, v7.d[0]
+    CKX     x0, 0x0011223344556677, 51
+    umov    x0, v7.d[1]
+    CKX     x0, 0, 52                   /* 64-bit form: high lane cleared */
+
+    ldr     q8, fplit16
+    umov    x0, v8.d[0]
+    CKX     x0, 0xfedcba9876543210, 53
+    umov    x0, v8.d[1]
+    CKX     x0, 0x0123456789abcdef, 54  /* 128-bit form: both lanes loaded */
+
     movz    x0, #0
     hlt     #0
 fail:
     mov     x0, x11
     hlt     #0
+
+    /* Literal pool for the LDR (literal) checks above. 16-byte aligned so the
+     * Q form is naturally aligned; each label sits at a multiple of its size. */
+    .balign 16
+fplit4:
+    .word   0x89abcdef
+    .word   0
+fplit8:
+    .quad   0x0011223344556677
+fplit16:
+    .quad   0xfedcba9876543210
+    .quad   0x0123456789abcdef
