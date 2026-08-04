@@ -187,6 +187,20 @@ static void put_ld_tmp(IRBlock *ir, u8 base, s64 off, unsigned k,
                      MDESC_MAKE(k, szlog, sign, is64) | MDESC_TMPBIT);
     o->imm2pc = pc;
 }
+/* Stage the guest base in TMP2 so a destination that aliases it still reads
+ * the original value, and return the vreg to address from.
+ *
+ * Skipped when the base is SP, for two reasons that point the same way: no
+ * destination can alias SP (Rt/Rt2/Rs == 31 is XZR, not SP), so there is
+ * nothing to protect against; and the backends emit the SP-alignment check
+ * only for a memory op whose base IS VREG_SP, so staging would hide it and
+ * the access would run where the interpreter faults. */
+static u8 base_stage(IRBlock *ir, unsigned rn) {
+    if (rn == 31) return rsp(rn);
+    ir_put(ir, IRO_MOV, 1, VREG_TMP2, rsp(rn), 0, 0, 0, 0);
+    return VREG_TMP2;
+}
+
 /* Pre/post-indexed load: the interpreter computes the writeback value from
  * the OLD base and applies it AFTER the register write (base wins when
  * rt == rn), so a base-clobbering load must stash the base in TMP2 first. */
@@ -617,22 +631,22 @@ static int fe_lse_memop(IRBlock *ir, u32 insn, u64 pc) {
     }
 
     /* base -> TMP2 (Rt may alias Rn); old -> TMP1; result -> TMP0. */
-    ir_put(ir, IRO_MOV, 1, VREG_TMP2, rsp(rn), 0, 0, 0, 0);
-    put_ld_tmp(ir, VREG_TMP2, 0, 1, szl, 0, w, pc);   /* TMP1 = old, zero-ext */
+    u8 abase = base_stage(ir, rn);
+    put_ld_tmp(ir, abase, 0, 1, szl, 0, w, pc);   /* TMP1 = old, zero-ext */
 
     if (o3) {                                    /* SWP: store Rs, return old */
-        put_st(ir, VREG_TMP2, 0, rx(rs), szl, pc);
+        put_st(ir, abase, 0, rx(rs), szl, pc);
     } else if (opc <= 3) {                        /* LDADD/LDCLR/LDEOR/LDSET */
         static const u8 aop[4] = { IRO_ADD, IRO_BIC, IRO_EOR, IRO_ORR };
         put_alu(ir, aop[opc], (u8)w, VREG_TMP0, VREG_TMP1, rx(rs));
-        put_st(ir, VREG_TMP2, 0, VREG_TMP0, szl, pc);
+        put_st(ir, abase, 0, VREG_TMP0, szl, pc);
     } else {                                      /* LDSMAX/LDSMIN/LDUMAX/LDUMIN */
         if (szl < 2) return 0;                    /* byte/half signed-safe: helper */
         /* result = cc ? old : Rs, cc comparing old vs Rs (SUBS old,Rs). */
         static const u8 cc[4] = { 12, 11, 8, 3 }; /* GT, LT, HI, LO */
         put_alu(ir, IRO_SUBS, (u8)w, VREG_ZERO, VREG_TMP1, rx(rs));
         ir_put(ir, IRO_CSEL, (u8)w, VREG_TMP0, VREG_TMP1, rx(rs), cc[opc - 4], 0, 0);
-        put_st(ir, VREG_TMP2, 0, VREG_TMP0, szl, pc);
+        put_st(ir, abase, 0, VREG_TMP0, szl, pc);
     }
     if (rt != 31)
         ir_put(ir, IRO_MOV, 1, (u8)rt, VREG_TMP1, 0, 0, 0, 0);  /* Rt = old */
@@ -652,8 +666,8 @@ static int fe_lse_cas(IRBlock *ir, u32 insn, u64 pc) {
     unsigned rs = (insn >> 16) & 31, rn = (insn >> 5) & 31, rt = insn & 31;
     u8 w = (u8)(szl == 3);
 
-    ir_put(ir, IRO_MOV, 1, VREG_TMP2, rsp(rn), 0, 0, 0, 0);  /* base (Rt may alias Rn) */
-    put_ld_tmp(ir, VREG_TMP2, 0, 1, szl, 0, w, pc);          /* TMP1 = old, zero-ext */
+    u8 cbase = base_stage(ir, rn);               /* base (Rt may alias Rn) */
+    put_ld_tmp(ir, cbase, 0, 1, szl, 0, w, pc);              /* TMP1 = old, zero-ext */
 
     u8 exp;                                                   /* expected = Rs (& emask) */
     if (szl < 2) {
@@ -664,7 +678,7 @@ static int fe_lse_cas(IRBlock *ir, u32 insn, u64 pc) {
         exp = rx(rs);
     }
     ir_put(ir, IRO_ATOMIC, w, VREG_ZERO, VREG_TMP1, exp, 0, 1, 0); /* cmp; b.ne fail */
-    put_st(ir, VREG_TMP2, 0, rx(rt), szl, pc);                     /* store new on match */
+    put_st(ir, cbase, 0, rx(rt), szl, pc);                         /* store new on match */
     ir_put(ir, IRO_ATOMIC_END, 1, rx(rs), VREG_TMP1, 0, 0, 1, 0);  /* Rs = old */
     ir->ninsns++;
     return 1;
@@ -705,12 +719,12 @@ static int fe_atomic(IRBlock *ir, u32 insn, u64 pc) {
 
     if (L) {                                     /* LDXR/LDAXR/LDXP/LDAXP */
         /* va first: rt may alias rn, and excl_addr is the OLD base. */
-        ir_put(ir, IRO_MOV, 1, VREG_TMP2, rsp(rn), 0, 0, 0, 0);
+        u8 xbase = base_stage(ir, rn);
         if (!o1) {
-            put_ld(ir, VREG_TMP2, 0, rt, szl, 0, szl == 3, pc);
+            put_ld(ir, xbase, 0, rt, szl, 0, szl == 3, pc);
         } else {
-            put_ld_tmp(ir, VREG_TMP2, 0, 0, szl, 0, szl == 3, pc);
-            put_ld_tmp(ir, VREG_TMP2, bytes, 1, szl, 0, szl == 3, pc);
+            put_ld_tmp(ir, xbase, 0, 0, szl, 0, szl == 3, pc);
+            put_ld_tmp(ir, xbase, bytes, 1, szl, 0, szl == 3, pc);
             if (rt != 31)
                 ir_put(ir, IRO_MOV, 1, (u8)rt, VREG_TMP0, 0, 0, 0, 0);
             if (rt2 != 31)
@@ -720,14 +734,20 @@ static int fe_atomic(IRBlock *ir, u32 insn, u64 pc) {
         ir_put(ir, IRO_MOVI, 1, VREG_TMP0, 0, 0, 0, 1, 0);
         ir_put(ir, IRO_CPUST, 0, VREG_ZERO, VREG_TMP0, 0, 0,
                offsetof(CPU, excl_valid), 0);    /* u32 field */
-        ir_put(ir, IRO_CPUST, 1, VREG_ZERO, VREG_TMP2, 0, 0,
+        ir_put(ir, IRO_CPUST, 1, VREG_ZERO, xbase, 0, 0,
                offsetof(CPU, excl_addr), 0);
         ir_put(ir, IRO_MOVI, 1, VREG_TMP0, 0, 0, 0, bytes, 0);
         ir_put(ir, IRO_CPUST, 1, VREG_ZERO, VREG_TMP0, 0, 0,
                offsetof(CPU, excl_size), 0);
     } else {                                     /* STXR/STLXR/STXP/STLXP */
-        ir_put(ir, IRO_ATOMIC, 0, VREG_ZERO, rsp(rn), VREG_ZERO,
-               VREG_ZERO, 0, 0);
+        /* The SP-alignment check belongs on the bracket, not on the stores:
+         * a monitor miss branches straight to the fail label, so the stores
+         * may never be reached, while the interpreter's sp_align_ok runs
+         * before it looks at the monitor at all. imm2pc carries the pc the
+         * backends need for the fault exit. */
+        IROp *ax = ir_put(ir, IRO_ATOMIC, 0, VREG_ZERO, rsp(rn), VREG_ZERO,
+                          VREG_ZERO, 0, 0);
+        ax->imm2pc = pc;
         put_st(ir, rsp(rn), 0, rx(rt), szl, pc);
         if (o1) put_st(ir, rsp(rn), bytes, rx(rt2), szl, pc);
         ir_put(ir, IRO_ATOMIC_END, 1, rx(rs), VREG_ZERO, VREG_ZERO,
@@ -790,7 +810,11 @@ static int fe_ldst_extra(IRBlock *ir, u32 insn, u64 pc) {
         if (L) {                                   /* all-or-nothing commit */
             int wb = (mode == 1 || mode == 3);
             s64 a0 = (mode == 1) ? 0 : imm;
-            if (wb) {                              /* old base survives in TMP2 */
+            /* Stage only for a writeback whose base is not SP: an SP base
+             * cannot be aliased by Rt/Rt2 and must stay VREG_SP so the
+             * backends' SP-alignment check fires (see base_stage). */
+            int stage = wb && rn != 31;
+            if (stage) {                           /* old base survives in TMP2 */
                 if (a0) ir_put(ir, IRO_ADDI, 1, VREG_TMP2, rsp(rn), 0, 0, (u64)a0, 0);
                 else    ir_put(ir, IRO_MOV,  1, VREG_TMP2, rsp(rn), 0, 0, 0, 0);
                 put_ld_tmp(ir, VREG_TMP2, 0,        0, szl, sign, 1, pc);
@@ -802,8 +826,12 @@ static int fe_ldst_extra(IRBlock *ir, u32 insn, u64 pc) {
             u8 w = (u8)(sign || opc == 2);
             if (rt  != 31) ir_put(ir, IRO_MOV, w, (u8)rt,  VREG_TMP0, 0, 0, 0, 0);
             if (rt2 != 31) ir_put(ir, IRO_MOV, w, (u8)rt2, VREG_TMP1, 0, 0, 0, 0);
-            if (wb) ir_put(ir, IRO_ADDI, 1, rsp(rn), VREG_TMP2, 0, 0,
-                           (mode == 1) ? (u64)imm : 0, 0);
+            if (wb) {
+                if (stage) ir_put(ir, IRO_ADDI, 1, rsp(rn), VREG_TMP2, 0, 0,
+                                  (mode == 1) ? (u64)imm : 0, 0);
+                else       ir_put(ir, IRO_ADDI, 1, rsp(rn), rsp(rn), 0, 0,
+                                  (u64)imm, 0);
+            }
         } else {
             if (mode != 0) return 0;               /* offset STP: PD covers */
             put_st(ir, rsp(rn), imm,            rx(rt),  szl, pc);
@@ -1454,8 +1482,17 @@ static int fe_insn(IRBlock *ir, const PDEnt *e, u64 pc) {
 
         /* Integer LDP: both register writes land only after BOTH reads
          * succeed (predecode.c L_LDP64 is all-or-nothing), so read into IR
-         * temps and commit with MOVs. The address is computed once into TMP2
-         * up front, which also resolves the rd==rn / rm==rn hazards. */
+         * temps and commit with MOVs.
+         *
+         * The address goes through TMP2 only when a destination aliases the
+         * base, which is the hazard that staging exists for. Reading off the
+         * guest base directly otherwise matters for more than the one saved
+         * IR op: the backends emit the SP-alignment check when a memory op's
+         * base IS VREG_SP, and a base staged into a temp hides that — every
+         * `ldp x, y, [sp]` on a misaligned SP would then run instead of
+         * faulting. Rt/Rt2 == 31 is XZR, never SP, so the hazard cannot
+         * arise when the base is SP and the direct form always applies
+         * there. */
         case PD_LDP64: case PD_LDP64PRE: case PD_LDP64POST:
         case PD_LDP32: case PD_LDP32PRE: case PD_LDP32POST: {
             int is64 = (e->op == PD_LDP64 || e->op == PD_LDP64PRE || e->op == PD_LDP64POST);
@@ -1463,14 +1500,28 @@ static int fe_insn(IRBlock *ir, const PDEnt *e, u64 pc) {
             int wb = post || e->op == PD_LDP64PRE || e->op == PD_LDP32PRE;
             unsigned szl = is64 ? 3 : 2, esz = is64 ? 8 : 4;
             s64 a0 = post ? 0 : (s64)e->imm;
-            if (a0) ir_put(ir, IRO_ADDI, 1, VREG_TMP2, rsp(e->rn), 0, 0, (u64)a0, 0);
-            else    ir_put(ir, IRO_MOV,  1, VREG_TMP2, rsp(e->rn), 0, 0, 0, 0);
-            put_ld_tmp(ir, VREG_TMP2, 0,        0, szl, 0, is64, pc);
-            put_ld_tmp(ir, VREG_TMP2, (s64)esz, 1, szl, 0, is64, pc);
+            int alias = (e->rn != 31 && (e->rd == e->rn || e->rm == e->rn));
+            if (alias) {
+                if (a0) ir_put(ir, IRO_ADDI, 1, VREG_TMP2, rsp(e->rn), 0, 0, (u64)a0, 0);
+                else    ir_put(ir, IRO_MOV,  1, VREG_TMP2, rsp(e->rn), 0, 0, 0, 0);
+                put_ld_tmp(ir, VREG_TMP2, 0,        0, szl, 0, is64, pc);
+                put_ld_tmp(ir, VREG_TMP2, (s64)esz, 1, szl, 0, is64, pc);
+            } else {
+                put_ld_tmp(ir, rsp(e->rn), a0,             0, szl, 0, is64, pc);
+                put_ld_tmp(ir, rsp(e->rn), a0 + (s64)esz,  1, szl, 0, is64, pc);
+            }
             if (e->rd != 31) ir_put(ir, IRO_MOV, (u8)is64, e->rd, VREG_TMP0, 0, 0, 0, 0);
             if (e->rm != 31) ir_put(ir, IRO_MOV, (u8)is64, e->rm, VREG_TMP1, 0, 0, 0, 0);
-            if (wb) ir_put(ir, IRO_ADDI, 1, rsp(e->rn), VREG_TMP2, 0, 0,
-                           post ? e->imm : 0, 0);
+            /* Writeback last: a faulted read must leave the base alone. With
+             * the staged form the value comes from TMP2 (the old base, plus
+             * the pre-index offset already folded in); without it the base is
+             * still intact, so it is base + imm either way. */
+            if (wb) {
+                if (alias) ir_put(ir, IRO_ADDI, 1, rsp(e->rn), VREG_TMP2, 0, 0,
+                                  post ? e->imm : 0, 0);
+                else       ir_put(ir, IRO_ADDI, 1, rsp(e->rn), rsp(e->rn), 0, 0,
+                                  e->imm, 0);
+            }
             break;
         }
 

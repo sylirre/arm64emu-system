@@ -2892,6 +2892,9 @@ static void emit_atomic(BE *be, const IRBlock *ir, int i) {
         return;
     }
     int ha = ra_use(be, o->a);                   /* base = monitor address */
+    /* Before the monitor is consulted: a monitor miss skips the stores, so
+     * putting the SP check on them would let a misaligned SP through. */
+    if (o->a == VREG_SP) emit_spchk(be, ha, o->imm2pc, o->icnt);
     ld32(e, RAX, R14, (s32)offsetof(CPU, excl_valid));
     op_rr(e, 0, 0x85, RAX, RAX);                 /* test eax,eax */
     be->at_f0 = jcc_fwd(e, CC_E);
