@@ -89,6 +89,8 @@ src/
     virt.dts              device tree source (QEMU virt tree)
     virt_dtb.h            dtc output, embedded in the binary — regenerate,
                           never hand-edit
+    fdt.h, fdt.c          minimal in-place FDT editing: sizes the /memory node
+                          to --memory, in the built-in tree and in a --dtb file
   jit/                    accelerated engines (predecoded tier + --jit)
     predecode.h           PDEnt: dense opcode id + pre-extracted operands
     predecode.c           the pre-decode classifier (mirrors decode.c; anything
@@ -155,6 +157,8 @@ tests/
     m29_psci.S            PSCI conduit queries over HVC
     m30_sysreg.S          ID-register constants + MSR/MRS round-trip
     m31_mmu2.S            MMU corners: TBI, EPD, TxSZ fault, 4-level walk
+    m32_dtbmem.S          the DTB's /memory node tracks --memory (--bios,
+                          run with --memory 384)
   scripts/
     fuzz_gen.c            random-block generator for run_fuzz_engines.sh
     diff_qemu.sh          per-instruction PC-stream diff vs QEMU (dev oracle)

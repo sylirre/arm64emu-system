@@ -10,6 +10,7 @@
  */
 #include "machine.h"
 #include "cpu.h"
+#include "fdt/fdt.h"
 #include "tty.h"
 #include "jit/jit.h"
 #include "jit/predecode.h"
@@ -57,6 +58,20 @@ static u8 *read_file(const char *path, size_t *len_out) {
     fclose(f);
     if (len_out) *len_out = (size_t)n;
     return buf;
+}
+
+/* --dtb: load the override tree, size its /memory node to the RAM we mapped —
+ * as platform_build does for the built-in tree, because a tree that disagrees
+ * with the actual --memory faults the firmware — and place it at the RAM base.
+ * Repeated after a warm reboot: the previous OS reused that memory. */
+static void place_dtb_override(Machine *m, const char *path) {
+    size_t n;
+    u8 *d = read_file(path, &n);
+    if (fdt_set_memory(d, n, m->ram_base, m->ram_size) != 0)
+        fprintf(stderr, "[fdt] warning: no /memory node in %s; guest RAM size "
+                        "may not match --memory\n", path);
+    phys_write_blk(m, RAM_BASE, d, n);
+    free(d);
 }
 
 /* Terse synopsis for argument errors: one line to stderr, exit 2. The full
@@ -245,8 +260,10 @@ static void help(void) {
         {"    --append CMDLINE", "Kernel command line for --kernel boots. A "
                         "--drive ISO/GRUB boot ignores it."},
         {"    --dtb FILE", "Override the embedded device tree with FILE "
-                        "(loaded at the RAM base)."},
-        {"-m, --memory MB", "Guest RAM size in MiB. Default 1024."},
+                        "(loaded at the RAM base). Its /memory node is sized to "
+                        "--memory, as the built-in tree's is."},
+        {"-m, --memory MB", "Guest RAM size in MiB. Default 1024. The device "
+                        "tree handed to the guest is sized to match."},
         {"    --drive IMG[,ro][,rw]", "Attach IMG as a virtio-blk disk "
                         "(repeatable, up to 8). 'ro' opens the image read-only "
                         "and advertises a read-only disk; default read-write."},
@@ -653,11 +670,7 @@ int main(int argc, char **argv) {
     if (!bios && !binfile) usage();
 
     if ((bios || kernel) && platform_build) platform_build(&m);
-    if (dtbfile) {                       /* override embedded DTB at RAM base */
-        size_t n; u8 *d = read_file(dtbfile, &n);
-        phys_write_blk(&m, RAM_BASE, d, n);
-        free(d);
-    }
+    if (dtbfile) place_dtb_override(&m, dtbfile);   /* override DTB at RAM base */
     if (kernel && platform_setup_boot)
         platform_setup_boot(&m, kernel, initrd, append);
 
@@ -686,7 +699,7 @@ int main(int argc, char **argv) {
                 machine_reset(&m, entry, (unsigned)reset_el);
                 /* machine_reset restores the built-in DTB; re-apply file-based
                  * overrides that live in RAM, which the previous OS reused. */
-                if (dtbfile) { size_t n; u8 *d = read_file(dtbfile, &n); phys_write_blk(&m, RAM_BASE, d, n); free(d); }
+                if (dtbfile) place_dtb_override(&m, dtbfile);
                 if (binfile) { size_t n; u8 *b = read_file(binfile, &n); phys_write_blk(&m, bin_addr, b, n); free(b); }
                 continue;
             }

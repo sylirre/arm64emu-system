@@ -49,6 +49,9 @@ for src in "$ASM"/*.S; do
         *_rtc)  run=(${AE_RUNNER:-} "$EMU" ${EMU_FLAGS:-} --bios "$bin" --max-insn 100000) ;;   # pl031 needs platform_build
         *_gic|*_timer|*_irq|*_uart)
                 run=(${AE_RUNNER:-} "$EMU" ${EMU_FLAGS:-} --bios "$bin" --max-insn 100000) ;;   # gic/timer/uart need platform_build
+        # The DTB is placed only by platform_build, and the size the test looks
+        # for is this --memory (not the 1 GB the blob is compiled with).
+        *_dtbmem) run=(${AE_RUNNER:-} "$EMU" ${EMU_FLAGS:-} --bios "$bin" --memory 384 --max-insn 100000) ;;
         *)      run=(${AE_RUNNER:-} "$EMU" ${EMU_FLAGS:-} --bin "$bin@$LOAD" --max-insn 100000) ;;
     esac
     # </dev/null like the boot harnesses: an idle stdin inherited from the

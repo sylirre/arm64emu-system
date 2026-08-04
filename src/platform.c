@@ -4,6 +4,7 @@
  * via fw_cfg, and drive timer/UART events for the run loop. */
 #include "devices.h"
 #include "machine.h"
+#include "fdt/fdt.h"
 #include "fdt/virt_dtb.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -91,6 +92,18 @@ void platform_build(Machine *m) {
     machine_add_device(m, 0x3eff0000, 0x10000,      stub_ones_read, stub_write, m, "pcie-pio");
     machine_add_device(m, 0x10000000, 0x2eff0000,   stub_ones_read, stub_write, m, "pcie-mmio");
     machine_add_device(m, 0x4010000000ULL, 0x10000000, stub_ones_read, stub_write, m, "pcie-ecam");
+
+    /* The embedded tree is compiled from a `-m 1024` reference machine, so its
+     * /memory node has to be brought in line with the RAM machine_init actually
+     * mapped before anything reads it: the firmware sizes the guest's memory
+     * from here and hands it on to the kernel in the UEFI memory map, so a tree
+     * promising more than exists faults EDK2 on the first access past the end,
+     * and one promising less silently strands the rest. Patched in place, once:
+     * virt_dtb is this process's only copy of the tree, and machine_reset
+     * re-places the same, already-corrected bytes. */
+    if (fdt_set_memory(virt_dtb, virt_dtb_len, m->ram_base, m->ram_size) != 0)
+        fprintf(stderr, "[fdt] warning: no /memory node in the built-in device "
+                        "tree; guest RAM size may not match --memory\n");
 
     /* Place the device tree at the base of RAM, where EDK2 ArmVirtQemu expects
      * it (PcdDeviceTreeInitialBaseAddress == base of system memory). */
