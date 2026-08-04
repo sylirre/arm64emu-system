@@ -406,6 +406,61 @@ _start:
     RDF
     CKX     x13, 0x08000000, 86
 
+    /* ---- AdvSIMD scalar FCVT* fp->int: rounding mode and FPToFixed flags ----
+     * The Dd,Dn / Sd,Sn forms used to open-code the convert, rounding N with
+     * a ties-AWAY helper and raising no flag at all. FCVTNS of a tie must go
+     * to even (FCVTAS is the ties-away one), and both must raise IXC when
+     * they round and IOC on NaN or saturation. */
+    ldr     d0, [x21, #160]              /* 2.5 */
+    CLRF
+    fcvtns  d2, d0
+    RDF
+    CKX     x13, 0x10, 87                /* IXC */
+    mov     x10, v2.d[0]
+    movz    x11, #88
+    cmp     x10, #2                      /* ties to EVEN */
+    b.ne    fail
+    CLRF
+    fcvtas  d2, d0                       /* same operand, ties AWAY */
+    RDF
+    CKX     x13, 0x10, 89
+    mov     x10, v2.d[0]
+    movz    x11, #90
+    cmp     x10, #3
+    b.ne    fail
+    ldr     d0, [x21, #168]              /* 3.5 */
+    CLRF
+    fcvtns  d2, d0
+    RDF
+    CKX     x13, 0x10, 91
+    mov     x10, v2.d[0]
+    movz    x11, #92
+    cmp     x10, #4                      /* the other tie direction */
+    b.ne    fail
+    ldr     d0, [x20, #48]               /* qNaN */
+    CLRF
+    fcvtns  d2, d0
+    RDF
+    CKX     x13, 0x1, 93                 /* IOC */
+    mov     x10, v2.d[0]
+    movz    x11, #94
+    cbnz    x10, fail                    /* NaN -> 0, not INT64_MIN */
+    ldr     d0, [x20, #64]               /* 1.5 */
+    CLRF
+    fcvtzu  d2, d0
+    RDF
+    CKX     x13, 0x10, 95                /* IXC */
+    ldr     d0, [x20, #0]                /* 1.0: exact, no flag */
+    CLRF
+    fcvtns  d2, d0
+    RDF
+    CKX     x13, 0, 96
+    ldr     d0, [x20, #184]              /* +inf: saturates */
+    CLRF
+    fcvtns  d2, d0
+    RDF
+    CKX     x13, 0x1, 97                 /* IOC */
+
     /* ---- half-precision converts ---- */
     ldr     s0, [x20, #224]              /* 100000.0f: overflows half */
     CLRF
@@ -515,3 +570,5 @@ sdat:                                    /* saturation operands */
     .word 42, 42, 42, 42                                  /* +112: shift 42 x4 */
     .word 1, 1, 1, 1                                      /* +128: shift 1 x4 */
     .word 1, 1, 1, 1                                      /* +144: 1 x4 */
+    .quad 0x4004000000000000                              /* +160: 2.5 */
+    .quad 0x400C000000000000                              /* +168: 3.5 */
