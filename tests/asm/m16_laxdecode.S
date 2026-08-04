@@ -154,6 +154,63 @@ _start:
     movz    x11, #22
     cbnz    x21, fail
 
+    /* ---- DP-immediate / DP-register fields that must be zero ---- */
+
+    movz    x21, #0xffff
+    .inst   0xf3400020                  /* bitfield opc==3 (no instruction) */
+    movz    x11, #23
+    cbnz    x21, fail
+
+    movz    x21, #0xffff
+    .inst   0x93000020                  /* SBFM sf=1 with N=0 */
+    movz    x11, #24
+    cbnz    x21, fail
+
+    movz    x21, #0xffff
+    .inst   0xb3c20020                  /* EXTR with bits[30:29]!=0 */
+    movz    x11, #25
+    cbnz    x21, fail
+
+    movz    x21, #0xffff
+    .inst   0x8b626020                  /* add/sub extended-reg, bits[23:22]!=0 */
+    movz    x11, #26
+    cbnz    x21, fail
+
+    movz    x21, #0xffff
+    .inst   0xbb020c20                  /* MADD with bits[30:29]!=0 */
+    movz    x11, #27
+    cbnz    x21, fail
+
+    movz    x21, #0xffff
+    .inst   0xda420020                  /* CCMP with S=0 */
+    movz    x11, #28
+    cbnz    x21, fail
+
+    movz    x21, #0xffff
+    .inst   0xfa420420                  /* CCMP with bit10=1 */
+    movz    x11, #29
+    cbnz    x21, fail
+
+    movz    x21, #0xffff
+    .inst   0xfa420030                  /* CCMP with o3 (bit4) = 1 */
+    movz    x11, #30
+    cbnz    x21, fail
+
+    movz    x21, #0xffff
+    .inst   0xba820020                  /* CSEL with S=1 */
+    movz    x11, #31
+    cbnz    x21, fail
+
+    movz    x21, #0xffff
+    .inst   0x9a820820                  /* CSEL with bit11=1 */
+    movz    x11, #32
+    cbnz    x21, fail
+
+    movz    x21, #0xffff
+    .inst   0x52c00000                  /* MOVZ sf=0 with hw=2 */
+    movz    x11, #33
+    cbnz    x21, fail
+
     /* ================= valid neighbours: must NOT trap (x21 stays 0xffff) === */
 
     movz    x21, #0xffff
@@ -181,6 +238,17 @@ _start:
     ldrsw   x0, [x5]                    /* size=2 opc=2: valid */
     ldrsh   w0, [x5]                    /* size=1 opc=3: valid (32-bit result) */
     ldrsb   w0, [x5]                    /* size=0 opc=3: valid */
+    sbfx    x0, x1, #0, #8              /* bitfield sf=1 N=1: valid */
+    ubfx    w0, w1, #0, #8              /* bitfield sf=0 N=0: valid */
+    extr    x0, x1, x2, #4              /* EXTR bits[30:29]==0: valid */
+    add     x0, x1, x2, uxtx            /* extended-reg bits[23:22]==0: valid */
+    madd    x0, x1, x2, x3              /* DP-3-source bits[30:29]==0: valid */
+    ccmp    x1, x2, #0, eq              /* CCMP S=1, bit10==0, bit4==0: valid */
+    ccmn    x1, #3, #0, ne              /* CCMN immediate form: valid */
+    csel    x0, x1, x2, eq              /* CSEL S=0, bit11==0: valid */
+    csinv   x0, x1, x2, ne              /* CSINV (op=1, o2=0): valid */
+    movz    w0, #0, lsl #16             /* 32-bit move-wide hw==1: valid (max) */
+    movz    x0, #0, lsl #32             /* 64-bit move-wide hw==2: valid */
     .inst   0x990000a0                  /* stlur w0,[x5]: valid (LRCPC2) */
     .inst   0xd94000a0                  /* ldapur x0,[x5]: valid (LRCPC2) */
     movz    x11, #100
